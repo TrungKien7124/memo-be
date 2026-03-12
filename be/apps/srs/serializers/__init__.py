@@ -1,4 +1,0 @@
-from __future__ import annotations
-from apps.srs.serializers.implemented.srs_card_srs_state_serializer import CardSRSStateSerializer
-from apps.srs.serializers.implemented.rse_review_session_serializer import ReviewSessionSerializer
-from apps.srs.serializers.implemented.rse_card_review_log_serializer import CardReviewLogSerializer

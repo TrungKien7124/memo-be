@@ -1,4 +1,0 @@
-from __future__ import annotations
-from apps.srs.normalizers.implemented.srs_card_srs_state_normalizer import CardSRSStateInputNormalizer
-from apps.srs.normalizers.implemented.rse_review_session_normalizer import ReviewSessionInputNormalizer
-from apps.srs.normalizers.implemented.rse_card_review_log_normalizer import CardReviewLogInputNormalizer
