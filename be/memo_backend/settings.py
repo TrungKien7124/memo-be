@@ -148,3 +148,6 @@ CELERY_TIMEZONE = 'UTC'
 # AI APIs
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
+
+# Custom user model
+AUTH_USER_MODEL = 'app_server.User'
