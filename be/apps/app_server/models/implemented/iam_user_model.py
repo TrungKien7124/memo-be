@@ -1,9 +1,9 @@
 import uuid
 
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager
 from django.db import models
 
-from apps.app_server.models.base.base_model import SoftDeleteManager
+from apps.app_server.models.base.base_model import SoftDeleteQuerySet
 
 
 ROLE_STUDENT = 'student'
@@ -17,6 +17,19 @@ ROLE_CHOICES = [
 ]
 
 
+class SoftDeleteUserManager(UserManager):
+    """UserManager that filters out soft-deleted users by default."""
+
+    def get_queryset(self):
+        return SoftDeleteQuerySet(self.model, using=self._db).alive()
+
+    def all_with_deleted(self):
+        return SoftDeleteQuerySet(self.model, using=self._db)
+
+    def deleted_only(self):
+        return SoftDeleteQuerySet(self.model, using=self._db).dead()
+
+
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
@@ -28,7 +41,7 @@ class User(AbstractUser):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
 
-    objects = SoftDeleteManager()
+    objects = SoftDeleteUserManager()
 
     class Meta:
         db_table = 'users'
