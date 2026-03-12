@@ -2,7 +2,8 @@ import logging
 
 from django.conf import settings
 
-from openai import OpenAI
+from apps.ai.services.providers import get_llm_provider
+from apps.ai.services.rag.retriever import retrieve_context
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def get_system_prompt(topic=''):
 
 
 def build_messages_for_api(conversation_messages, topic=''):
-    """Build the messages list for the OpenAI API from conversation history."""
+    """Build the messages list for the LLM provider from conversation history."""
     api_messages = [{'role': 'system', 'content': get_system_prompt(topic)}]
     for msg in conversation_messages:
         api_messages.append({'role': msg.role, 'content': msg.content})
@@ -40,7 +41,7 @@ def chat_with_ai(conversation, user_message_text):
     """
     Send user message to AI and return AI response text.
     Saves both user and AI messages to the conversation.
-    Raises on AI API failure after 1 retry.
+    When RAG is enabled, relevant context is retrieved and injected automatically.
     """
     from apps.ai.models.acs_message_model import Message
 
@@ -53,8 +54,17 @@ def chat_with_ai(conversation, user_message_text):
     history = conversation.messages.order_by('created_at')
     api_messages = build_messages_for_api(history, conversation.topic)
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
-    ai_response_text = _call_openai_with_retry(client, api_messages)
+    llm = get_llm_provider()
+
+    rag_enabled = getattr(settings, 'AI_RAG_ENABLED', False)
+    if rag_enabled:
+        context_docs = retrieve_context(query=user_message_text)
+        ai_response_text = llm.chat_completion_with_context(
+            api_messages,
+            context_documents=context_docs,
+        )
+    else:
+        ai_response_text = llm.chat_completion(api_messages)
 
     ai_message = Message.objects.create(
         conversation=conversation,
@@ -63,23 +73,3 @@ def chat_with_ai(conversation, user_message_text):
     )
 
     return ai_message
-
-
-def _call_openai_with_retry(client, messages, max_retries=1):
-    """Call OpenAI API with retry on failure."""
-    last_error = None
-    for attempt in range(max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model='gpt-3.5-turbo',
-                messages=messages,
-                max_tokens=500,
-                temperature=0.7,
-                timeout=30,
-            )
-            return response.choices[0].message.content
-        except Exception as exc:
-            last_error = exc
-            logger.warning('OpenAI API attempt %d failed: %s', attempt + 1, exc)
-
-    raise RuntimeError(f'AI service unavailable after {max_retries + 1} attempts: {last_error}')
