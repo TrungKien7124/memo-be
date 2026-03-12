@@ -6,3 +6,6 @@ class SrsConfig(AppConfig):
     name = 'apps.srs'
     label = 'srs'
     verbose_name = 'Spaced Repetition System'
+
+    def ready(self):
+        import apps.srs.signals  # noqa: F401
