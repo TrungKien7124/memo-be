@@ -158,9 +158,37 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 
-# AI APIs
+# AI Provider – switch between "openai" and "local" via env
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'openai')
+AI_STT_PROVIDER = os.getenv('AI_STT_PROVIDER', '') or AI_PROVIDER
+AI_TTS_PROVIDER = os.getenv('AI_TTS_PROVIDER', '') or AI_PROVIDER
+
+# External API keys
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY', '')
+
+# Model overrides (provider-specific defaults used if not set)
+AI_LLM_MODEL = os.getenv('AI_LLM_MODEL', '')
+AI_STT_MODEL = os.getenv('AI_STT_MODEL', '')
+AI_TTS_MODEL = os.getenv('AI_TTS_MODEL', '')
+
+# Local AI endpoints (used when AI_PROVIDER=local)
+AI_LOCAL_LLM_URL = os.getenv('AI_LOCAL_LLM_URL', 'http://localhost:11434')
+AI_LOCAL_LLM_MODEL = os.getenv('AI_LOCAL_LLM_MODEL', 'llama3')
+AI_LOCAL_LLM_API_KEY = os.getenv('AI_LOCAL_LLM_API_KEY', '')
+AI_LOCAL_LLM_TIMEOUT = int(os.getenv('AI_LOCAL_LLM_TIMEOUT', '60'))
+AI_LOCAL_STT_URL = os.getenv('AI_LOCAL_STT_URL', 'http://localhost:8081')
+AI_LOCAL_STT_MODEL = os.getenv('AI_LOCAL_STT_MODEL', 'whisper-large-v3')
+AI_LOCAL_STT_TIMEOUT = int(os.getenv('AI_LOCAL_STT_TIMEOUT', '60'))
+AI_LOCAL_TTS_URL = os.getenv('AI_LOCAL_TTS_URL', 'http://localhost:8082')
+AI_LOCAL_TTS_TIMEOUT = int(os.getenv('AI_LOCAL_TTS_TIMEOUT', '60'))
+
+# RAG configuration
+AI_RAG_ENABLED = os.getenv('AI_RAG_ENABLED', 'false').lower() in ('true', '1', 'yes')
+AI_VECTOR_STORE = os.getenv('AI_VECTOR_STORE', 'chroma')
+AI_VECTOR_STORE_PATH = os.getenv('AI_VECTOR_STORE_PATH', '')
+AI_VECTOR_COLLECTION = os.getenv('AI_VECTOR_COLLECTION', 'memo_rag')
+AI_RAG_TOP_K = int(os.getenv('AI_RAG_TOP_K', '5'))
 
 # Custom user model
 AUTH_USER_MODEL = 'app_server.User'
