@@ -5,5 +5,12 @@ from apps.app_server.models.implemented.cms_course_model import Course
 from apps.app_server.models.implemented.cms_module_model import Module
 from apps.app_server.models.implemented.cms_lesson_model import Lesson
 from apps.app_server.models.implemented.lms_lesson_progress_model import LessonProgress
+from apps.app_server.models.implemented.nfs_folder_model import Folder
+from apps.app_server.models.implemented.nfs_flashcard_model import Flashcard
 
-__all__ = ['BaseModel', 'User', 'UserProfile', 'Course', 'Module', 'Lesson', 'LessonProgress']
+__all__ = [
+    'BaseModel',
+    'User', 'UserProfile',
+    'Course', 'Module', 'Lesson', 'LessonProgress',
+    'Folder', 'Flashcard',
+]
