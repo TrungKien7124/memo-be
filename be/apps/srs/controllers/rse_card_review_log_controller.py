@@ -10,6 +10,7 @@ from apps.srs.serializers.rse_card_review_log_serializer import (
     CardReviewLogCreateSerializer,
 )
 from apps.srs.services.srs_review_service import process_review
+from apps.app_server.services.gms_xp_service import award_xp
 
 
 class CardReviewLogCreateView(APIView):
@@ -40,6 +41,8 @@ class CardReviewLogCreateView(APIView):
             choice=data['choice'],
             **log_data,
         )
+
+        award_xp(user=request.user, source='review', source_id=review_log.id)
 
         result_serializer = CardReviewLogSerializer(review_log)
         return Response({'data': result_serializer.data}, status=status.HTTP_201_CREATED)

@@ -7,10 +7,13 @@ from apps.app_server.models.implemented.cms_lesson_model import Lesson
 from apps.app_server.models.implemented.lms_lesson_progress_model import LessonProgress
 from apps.app_server.models.implemented.nfs_folder_model import Folder
 from apps.app_server.models.implemented.nfs_flashcard_model import Flashcard
+from apps.app_server.models.implemented.gms_xp_transaction_model import XPTransaction
+from apps.app_server.models.implemented.gms_user_xp_model import UserXP
 
 __all__ = [
     'BaseModel',
     'User', 'UserProfile',
     'Course', 'Module', 'Lesson', 'LessonProgress',
     'Folder', 'Flashcard',
+    'XPTransaction', 'UserXP',
 ]

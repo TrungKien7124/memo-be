@@ -5,4 +5,5 @@ urlpatterns = [
     path('', include('apps.app_server.routes.implemented.cms_route')),
     path('', include('apps.app_server.routes.implemented.lms_route')),
     path('', include('apps.app_server.routes.implemented.nfs_route')),
+    path('', include('apps.app_server.routes.implemented.gms_route')),
 ]
