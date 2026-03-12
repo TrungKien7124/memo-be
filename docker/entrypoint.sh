@@ -15,10 +15,14 @@ echo "Redis is ready."
 
 cd /app/be
 
-echo "Running migrations..."
-python manage.py migrate --noinput
+if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
+    echo "Running migrations..."
+    python manage.py migrate --noinput
+fi
 
-echo "Collecting static files..."
-python manage.py collectstatic --noinput 2>/dev/null || true
+if [ "${COLLECT_STATIC:-false}" = "true" ]; then
+    echo "Collecting static files..."
+    python manage.py collectstatic --noinput 2>/dev/null || true
+fi
 
 exec "$@"

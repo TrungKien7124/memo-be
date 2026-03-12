@@ -53,6 +53,9 @@ services:
       - "${WEB_PORT:-8000}:8000"
     volumes:
       - static_files:/app/be/staticfiles
+    environment:
+      RUN_MIGRATIONS: "true"
+      COLLECT_STATIC: "true"
     depends_on:
       db:
         condition: service_healthy
@@ -67,6 +70,9 @@ services:
     <<: *common-env
     command: celery -A memo_backend worker -l info --concurrency=2
     working_dir: /app/be
+    environment:
+      RUN_MIGRATIONS: "false"
+      COLLECT_STATIC: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -81,6 +87,9 @@ services:
     <<: *common-env
     command: celery -A memo_backend beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     working_dir: /app/be
+    environment:
+      RUN_MIGRATIONS: "false"
+      COLLECT_STATIC: "false"
     depends_on:
       db:
         condition: service_healthy
@@ -97,6 +106,9 @@ services:
     working_dir: /app/be
     ports:
       - "${WS_PORT:-8001}:8001"
+    environment:
+      RUN_MIGRATIONS: "false"
+      COLLECT_STATIC: "false"
     depends_on:
       db:
         condition: service_healthy
