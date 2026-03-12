@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
     'channels',
+    'django_celery_beat',
     # Local apps
     'apps.app_server',
     'apps.srs',

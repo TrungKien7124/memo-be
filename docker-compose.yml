@@ -1,72 +1,114 @@
-version: '3.8'
+version: "3.9"
+
+x-common-env: &common-env
+  env_file:
+    - .env.docker
 
 services:
+  # ──────────────── PostgreSQL ────────────────
   db:
     image: postgres:15-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.docker
     environment:
-      POSTGRES_DB: memo_db
-      POSTGRES_USER: memo_user
-      POSTGRES_PASSWORD: memo_password
+      POSTGRES_DB: ${POSTGRES_DB:-memo_db}
+      POSTGRES_USER: ${POSTGRES_USER:-memo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memo_password}
     ports:
-      - "5432:5432"
+      - "${DB_PORT_EXPOSE:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memo_user} -d ${POSTGRES_DB:-memo_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
+  # ──────────────── Redis ────────────────
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT_EXPOSE:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
+  # ──────────────── Django Web ────────────────
   web:
     build:
       context: .
       dockerfile: Dockerfile
+    <<: *common-env
     command: >
-      sh -c "cd be &&
-             python manage.py migrate &&
-             python manage.py runserver 0.0.0.0:8000"
-    volumes:
-      - .:/app
+      gunicorn memo_backend.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers 3
+      --timeout 120
+      --chdir /app/be
     ports:
-      - "8000:8000"
-    environment:
-      SECRET_KEY: django-insecure-docker-dev-key
-      DEBUG: "True"
-      ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
-      DB_ENGINE: django.db.backends.postgresql
-      DB_NAME: memo_db
-      DB_USER: memo_user
-      DB_PASSWORD: memo_password
-      DB_HOST: db
-      DB_PORT: "5432"
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
-      CORS_ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - static_files:/app/be/staticfiles
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-  celery:
+  # ──────────────── Celery Worker ────────────────
+  celery_worker:
     build:
       context: .
       dockerfile: Dockerfile
-    command: >
-      sh -c "cd be && celery -A memo_backend worker -l info"
-    volumes:
-      - .:/app
-    environment:
-      SECRET_KEY: django-insecure-docker-dev-key
-      DB_ENGINE: django.db.backends.postgresql
-      DB_NAME: memo_db
-      DB_USER: memo_user
-      DB_PASSWORD: memo_password
-      DB_HOST: db
-      DB_PORT: "5432"
-      CELERY_BROKER_URL: redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    <<: *common-env
+    command: celery -A memo_backend worker -l info --concurrency=2
+    working_dir: /app/be
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ──────────────── Celery Beat (scheduler) ────────────────
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    <<: *common-env
+    command: celery -A memo_backend beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    working_dir: /app/be
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ──────────────── Daphne (WebSocket / ASGI) ────────────────
+  daphne:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    <<: *common-env
+    command: daphne -b 0.0.0.0 -p 8001 memo_backend.asgi:application
+    working_dir: /app/be
+    ports:
+      - "${WS_PORT:-8001}:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_files:
+    driver: local
