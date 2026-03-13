@@ -16,7 +16,7 @@
 
 | Mục tiêu | Mô tả |
 |-----------|--------|
-| **Học có cấu trúc** | Khóa học → Module → Lesson (video) theo lộ trình |
+| **Học có cấu trúc** | Khóa học → Module → Lesson (video/text/quiz) theo lộ trình |
 | **Ghi nhớ hiệu quả** | Flashcard + SRS tự động lên lịch ôn tập |
 | **Luyện nói AI** | Hội thoại tự do theo chủ đề, AI thích nghi theo ngữ cảnh |
 | **Data-driven** | Log hành vi học tập, sẵn sàng cho ML optimization |
@@ -109,11 +109,14 @@ Refresh  → POST /api/auth/refresh/  → validate refresh → trả access mớ
 
 **Cấu trúc nội dung:**
 ```
-Course → Module (ordered) → Lesson (video)
+Course → Module (ordered) → Lesson (video | text | quiz)
 ```
 
 **Business rules:**
-- Video nhúng từ YouTube/Vimeo (không host nội bộ)
+- `lesson_type=video`: dùng `video_url` + `min_watch_time`
+- `lesson_type=text`: dùng `content_markdown`
+- `lesson_type=quiz`: dùng `quiz_questions` (mỗi câu 4 đáp án, 1 đáp án đúng)
+- Mỗi module chỉ có tối đa 1 bài kiểm tra cuối: `is_final=true` (chỉ áp dụng cho `lesson_type=quiz`)
 - Lesson hoàn thành khi `watched_seconds >= min_watch_time` (mặc định 120s)
 - Hoàn thành lesson → cộng XP
 - Trang "tham gia khóa học" thiết kế sẵn cho payment (hiện miễn phí)
@@ -232,8 +235,12 @@ User Text → LLM (OpenAI/Gemini) → Response Text
                      │ id (PK)      │  │ user_id (FK) │
                      │ module_id(FK)│  │ folder_id(FK)│
                      │ title        │  │ front_text   │
-                     │ video_url    │  │ back_text    │
-                     │ min_watch_time│ │ ipa          │
+                     │ lesson_type  │  │ back_text    │
+                     │ video_url    │  │ ipa          │
+                     │ content_md   │  │              │
+                     │ quiz_questions│ │              │
+                     │ is_final     │  │              │
+                     │ min_watch_time│ │              │
                      └──────┬───────┘  │ audio_url    │
                             │          │ image_url    │
                             ▼          │ card_type    │
@@ -420,6 +427,13 @@ memo-be/be/
 1. User xem video → FE gửi watched_seconds (debounced)
 2. PUT /api/lms/lesson-progress/            → Update watched_seconds
 3. Khi watched_seconds >= min_watch_time    → completed = true, cộng XP
+```
+
+**Quiz lesson (bao gồm final module quiz):**
+```
+1. Admin tạo lesson_type=quiz với quiz_questions
+2. (Tùy chọn) set is_final=true để đánh dấu bài kiểm tra cuối module
+3. FE render câu hỏi trắc nghiệm, gửi kết quả theo luồng LMS/quiz của hệ thống
 ```
 
 **Speaking Practice:**
