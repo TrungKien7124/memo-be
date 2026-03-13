@@ -1,4 +1,4 @@
-from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_QUIZ, Lesson
+from apps.app_server.models.implemented.cms_lesson_model import Lesson
 from apps.app_server.models.implemented.cms_module_model import Module
 from apps.app_server.models.implemented.lms_lesson_progress_model import LessonProgress
 
@@ -23,27 +23,17 @@ def get_module_state_map(user, course_id):
     for lesson in lessons:
         lessons_by_module.setdefault(lesson.module_id, []).append(lesson)
 
-    final_quiz_by_module = {
-        lesson.module_id: lesson
-        for lesson in lessons
-        if lesson.is_final and lesson.lesson_type == LESSON_TYPE_QUIZ
-    }
-
     state_map = {}
     for index, module in enumerate(modules):
         if index == 0:
             is_unlocked = True
         else:
             previous_module = modules[index - 1]
-            previous_final_quiz = final_quiz_by_module.get(previous_module.id)
-            if previous_final_quiz is None:
-                is_unlocked = True
-            else:
-                previous_progress = progress_map.get(previous_final_quiz.id)
-                is_unlocked = bool(previous_progress and previous_progress.quiz_passed)
+            previous_module_state = state_map.get(previous_module.id, {})
+            is_unlocked = bool(previous_module_state.get('is_completed', False))
 
         module_lessons = lessons_by_module.get(module.id, [])
-        is_completed = bool(module_lessons) and all(
+        is_completed = all(
             bool(progress_map.get(lesson.id) and progress_map[lesson.id].completed)
             for lesson in module_lessons
         )
