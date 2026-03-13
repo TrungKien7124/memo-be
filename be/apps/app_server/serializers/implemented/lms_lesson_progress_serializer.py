@@ -7,6 +7,10 @@ class LessonProgressSerializer(CoreModelSerializer):
         model = LessonProgress
         fields = [
             'id', 'user', 'lesson', 'watched_seconds',
+            'quiz_score', 'quiz_total_questions', 'quiz_passed', 'quiz_attempts',
             'completed', 'completed_at', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'user', 'completed', 'completed_at', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'user', 'completed', 'completed_at', 'created_at', 'updated_at',
+            'quiz_score', 'quiz_total_questions', 'quiz_passed', 'quiz_attempts',
+        ]

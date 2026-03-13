@@ -16,6 +16,10 @@ class LessonProgress(BaseModel):
         related_name='progress_records',
     )
     watched_seconds = models.PositiveIntegerField(default=0)
+    quiz_score = models.PositiveIntegerField(default=0)
+    quiz_total_questions = models.PositiveIntegerField(default=0)
+    quiz_passed = models.BooleanField(default=False)
+    quiz_attempts = models.PositiveIntegerField(default=0)
     completed = models.BooleanField(default=False)
     completed_at = models.DateTimeField(null=True, blank=True)
 
