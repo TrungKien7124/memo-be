@@ -19,9 +19,12 @@ class RegisterSerializer(serializers.Serializer):
         return value.lower()
 
     def validate_username(self, value):
-        if User.objects.all_with_deleted().filter(username=value).exists():
+        username = value.strip()
+        if not username:
+            raise serializers.ValidationError('Username is required.')
+        if User.objects.all_with_deleted().filter(username__iexact=username).exists():
             raise serializers.ValidationError('A user with this username already exists.')
-        return value
+        return username
 
     def validate_password(self, value):
         return validate_password_strength(value)
@@ -42,12 +45,27 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = serializers.CharField()
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):
         from django.contrib.auth import authenticate
-        user = authenticate(email=attrs['email'].lower(), password=attrs['password'])
+
+        login_input = attrs['email'].strip()
+        password = attrs['password']
+
+        if not login_input:
+            raise serializers.ValidationError({'email': 'Email or username is required.'})
+
+        if '@' in login_input:
+            user = User.objects.filter(email=login_input.lower(), is_deleted=False).first()
+        else:
+            user = User.objects.filter(username__iexact=login_input, is_deleted=False).first()
+
+        if not user:
+            raise serializers.ValidationError('Invalid email or password.')
+
+        user = authenticate(email=user.email.lower(), password=password)
         if not user:
             raise serializers.ValidationError('Invalid email or password.')
         if not user.is_active:
