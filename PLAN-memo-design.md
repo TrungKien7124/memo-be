@@ -300,9 +300,41 @@ CORE cung cấp các thành phần dùng chung, giúp giảm boilerplate:
 // Success (detail)
 { "data": { ... } }
 
-// Error
-{ "error": { "type": "validation_error", "message": "...", "details": { ... } }, "data": { ... } }
+// Error (standardized)
+{
+  "message": "Validation failed",
+  "old_data": { "email": "alice@example.com", "username": "alice" },
+  "error": {
+    "email": ["A user with this email already exists."],
+    "username": ["A user with this username already exists."]
+  }
+}
 ```
+
+### 5.1 Error Contract (BE -> FE)
+
+Mọi lỗi API phải trả về đúng schema sau:
+
+```json
+{
+  "message": "Error summary for alert/toast",
+  "old_data": { "field": "value user entered before error" },
+  "error": {
+    "field_name": ["error 1", "error 2"],
+    "non_field_errors": ["general error"]
+  }
+}
+```
+
+**Ý nghĩa từng field:**
+- `message`: message tổng quát hiển thị toast/alert.
+- `old_data`: dữ liệu user vừa gửi để FE restore form (không chứa dữ liệu nhạy cảm như password/token).
+- `error`: map lỗi theo field để FE highlight input tương ứng.
+
+**Quy tắc triển khai:**
+- Dùng `custom_exception_handler` cho mọi lỗi DRF chuẩn (`ValidationError`, `NotFound`, ...).
+- Với lỗi trả thủ công trong controller/service phải dùng helper trả lỗi cùng schema.
+- Không trả format lỗi cũ dạng `{ "error": { "type": "...", "details": ... } }`.
 
 ---
 
