@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.app_server.exceptions.exception_handler import error_response
 from apps.ai.models.acs_conversation_model import Conversation
 from apps.ai.models.sps_speaking_session_model import SpeakingSession
 from apps.ai.services.sps_speaking_service import process_speaking_turn
@@ -42,9 +43,11 @@ class SpeakingTurnView(APIView):
         audio_file = request.FILES.get('audio')
 
         if not session_id:
-            return Response(
-                {'error': {'type': 'validation_error', 'message': 'session_id is required.'}},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                request=request,
+                message='session_id is required.',
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error={'session_id': ['session_id is required.']},
             )
 
         try:
@@ -52,9 +55,10 @@ class SpeakingTurnView(APIView):
                 id=session_id, user=request.user,
             )
         except SpeakingSession.DoesNotExist:
-            return Response(
-                {'error': {'type': 'not_found', 'message': 'Speaking session not found.'}},
-                status=status.HTTP_404_NOT_FOUND,
+            return error_response(
+                request=request,
+                message='Speaking session not found.',
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         try:
@@ -64,9 +68,10 @@ class SpeakingTurnView(APIView):
                 text_input=text_input,
             )
         except (RuntimeError, ValueError) as exc:
-            return Response(
-                {'error': {'type': 'ai_error', 'message': str(exc)}},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            return error_response(
+                request=request,
+                message=str(exc),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
         response_data = {
@@ -89,9 +94,10 @@ class SpeakingSessionEndView(APIView):
         try:
             session = SpeakingSession.objects.get(id=session_id, user=request.user)
         except SpeakingSession.DoesNotExist:
-            return Response(
-                {'error': {'type': 'not_found', 'message': 'Speaking session not found.'}},
-                status=status.HTTP_404_NOT_FOUND,
+            return error_response(
+                request=request,
+                message='Speaking session not found.',
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         session.ended_at = timezone.now()

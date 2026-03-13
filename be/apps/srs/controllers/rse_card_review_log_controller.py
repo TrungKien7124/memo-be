@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.app_server.exceptions.exception_handler import error_response
 from apps.srs.models.srs_card_srs_state_model import CardSRSState
 from apps.srs.models.rse_card_review_log_model import CardReviewLog
 from apps.srs.serializers.rse_card_review_log_serializer import (
@@ -27,9 +28,10 @@ class CardReviewLogCreateView(APIView):
                 card__user=request.user,
             )
         except CardSRSState.DoesNotExist:
-            return Response(
-                {'error': {'type': 'not_found', 'message': 'Card SRS state not found.'}},
-                status=status.HTTP_404_NOT_FOUND,
+            return error_response(
+                request=request,
+                message='Card SRS state not found.',
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         log_data = process_review(srs_state, data['choice'])

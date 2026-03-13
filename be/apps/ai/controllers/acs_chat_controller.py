@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.app_server.exceptions.exception_handler import error_response
 from apps.ai.models.acs_conversation_model import Conversation
 from apps.ai.models.acs_message_model import Message
 from apps.ai.services.acs_chat_service import chat_with_ai
@@ -17,18 +18,21 @@ class ChatView(APIView):
         topic = request.data.get('topic', '')
 
         if not message_text:
-            return Response(
-                {'error': {'type': 'validation_error', 'message': 'Message is required.'}},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                request=request,
+                message='Message is required.',
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error={'message': ['Message is required.']},
             )
 
         if conversation_id:
             try:
                 conversation = Conversation.objects.get(id=conversation_id, user=request.user)
             except Conversation.DoesNotExist:
-                return Response(
-                    {'error': {'type': 'not_found', 'message': 'Conversation not found.'}},
-                    status=status.HTTP_404_NOT_FOUND,
+                return error_response(
+                    request=request,
+                    message='Conversation not found.',
+                    status_code=status.HTTP_404_NOT_FOUND,
                 )
         else:
             conversation = Conversation.objects.create(user=request.user, topic=topic)
@@ -36,9 +40,10 @@ class ChatView(APIView):
         try:
             ai_message = chat_with_ai(conversation, message_text)
         except RuntimeError as exc:
-            return Response(
-                {'error': {'type': 'ai_error', 'message': str(exc)}},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            return error_response(
+                request=request,
+                message=str(exc),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
         return Response({
@@ -77,9 +82,10 @@ class ConversationDetailView(APIView):
         try:
             conversation = Conversation.objects.get(id=conversation_id, user=request.user)
         except Conversation.DoesNotExist:
-            return Response(
-                {'error': {'type': 'not_found', 'message': 'Conversation not found.'}},
-                status=status.HTTP_404_NOT_FOUND,
+            return error_response(
+                request=request,
+                message='Conversation not found.',
+                status_code=status.HTTP_404_NOT_FOUND,
             )
 
         messages = conversation.messages.order_by('created_at')
