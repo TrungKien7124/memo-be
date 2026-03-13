@@ -117,6 +117,7 @@ Course → Module (ordered) → Lesson (video | text | quiz)
 - `lesson_type=text`: dùng `content_markdown`
 - `lesson_type=quiz`: dùng `quiz_questions` (mỗi câu 4 đáp án, 1 đáp án đúng)
 - Mỗi module chỉ có tối đa 1 bài kiểm tra cuối: `is_final=true` (chỉ áp dụng cho `lesson_type=quiz`)
+- Rule mở khóa module: user phải pass final quiz của module hiện tại (>=80%) thì module kế tiếp mới mở.
 - Lesson hoàn thành khi `watched_seconds >= min_watch_time` (mặc định 120s)
 - Hoàn thành lesson → cộng XP
 - Trang "tham gia khóa học" thiết kế sẵn cho payment (hiện miễn phí)
@@ -433,7 +434,8 @@ memo-be/be/
 ```
 1. Admin tạo lesson_type=quiz với quiz_questions
 2. (Tùy chọn) set is_final=true để đánh dấu bài kiểm tra cuối module
-3. FE render câu hỏi trắc nghiệm, gửi kết quả theo luồng LMS/quiz của hệ thống
+3. FE submit selected_answers, BE chấm điểm và lưu score/attempt/pass
+4. Nếu quiz là final quiz và đạt >=80% thì mở khóa module kế tiếp
 ```
 
 **Speaking Practice:**
