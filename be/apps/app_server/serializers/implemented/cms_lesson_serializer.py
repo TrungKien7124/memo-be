@@ -10,6 +10,12 @@ from apps.app_server.models.implemented.cms_lesson_model import (
 
 
 class LessonSerializer(CoreModelSerializer):
+    status = serializers.SerializerMethodField()
+
+    def get_status(self, obj):
+        status_map = self.context.get('lesson_status_map', {})
+        return status_map.get(obj.id)
+
     def validate(self, attrs):
         instance = getattr(self, 'instance', None)
 
@@ -70,6 +76,6 @@ class LessonSerializer(CoreModelSerializer):
         fields = [
             'id', 'module', 'title', 'lesson_type', 'video_url',
             'content_markdown', 'quiz_questions', 'is_final',
-            'min_watch_time', 'order_index', 'created_at', 'updated_at',
+            'min_watch_time', 'order_index', 'status', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
