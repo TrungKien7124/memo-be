@@ -7,7 +7,7 @@ from apps.app_server.models.implemented.cms_lesson_model import (
 )
 from apps.app_server.services.gms_xp_service import award_xp
 
-QUIZ_PASS_THRESHOLD_PERCENT = 80
+QUIZ_MAX_HEARTS = 5
 
 
 def update_lesson_progress(progress_instance, watched_seconds):
@@ -69,39 +69,127 @@ def complete_non_quiz_lesson(progress_instance, watched_seconds=0, force_complet
     return newly_completed
 
 
-def submit_quiz_lesson(progress_instance, selected_answers):
+def _sync_quiz_totals(progress_instance, total_questions):
+    progress_instance.quiz_total_questions = total_questions
+    progress_instance.quiz_score = progress_instance.quiz_correct_count
+
+
+def _reset_quiz_runtime(progress_instance, total_questions):
+    progress_instance.quiz_hearts_left = QUIZ_MAX_HEARTS
+    progress_instance.quiz_current_question_index = 0
+    progress_instance.quiz_correct_count = 0
+    progress_instance.quiz_passed = False
+    progress_instance.completed = False
+    progress_instance.completed_at = None
+    _sync_quiz_totals(progress_instance, total_questions)
+
+
+def submit_quiz_answer(progress_instance, selected_answer, question_index=None):
     lesson = progress_instance.lesson
     if lesson.lesson_type != LESSON_TYPE_QUIZ:
-        return {'score': 0, 'total_questions': 0, 'passed': False, 'newly_passed': False}
+        return {
+            'completed': False,
+            'failed': False,
+            'is_correct': False,
+            'hearts_left': 0,
+            'current_question_index': 0,
+            'correct_count': 0,
+            'total_questions': 0,
+            'max_hearts': QUIZ_MAX_HEARTS,
+            'newly_completed': False,
+        }
 
     questions = lesson.quiz_questions or []
-    if not isinstance(selected_answers, list):
-        selected_answers = []
-
     total_questions = len(questions)
-    score = 0
-    for index, question in enumerate(questions):
-        correct_index = question.get('correct_index')
-        selected = selected_answers[index] if index < len(selected_answers) else None
-        if isinstance(selected, int) and selected == correct_index:
-            score += 1
+    if total_questions == 0:
+        _reset_quiz_runtime(progress_instance, 0)
+        progress_instance.save()
+        return {
+            'completed': False,
+            'failed': False,
+            'is_correct': False,
+            'hearts_left': progress_instance.quiz_hearts_left,
+            'current_question_index': progress_instance.quiz_current_question_index,
+            'correct_count': progress_instance.quiz_correct_count,
+            'total_questions': 0,
+            'max_hearts': QUIZ_MAX_HEARTS,
+            'newly_completed': False,
+        }
 
-    passed = total_questions > 0 and ((score / total_questions) * 100) >= QUIZ_PASS_THRESHOLD_PERCENT
-    newly_passed = not progress_instance.quiz_passed and passed
+    if progress_instance.quiz_hearts_left <= 0:
+        _reset_quiz_runtime(progress_instance, total_questions)
 
-    progress_instance.quiz_attempts += 1
-    progress_instance.quiz_score = score
-    progress_instance.quiz_total_questions = total_questions
-    progress_instance.quiz_passed = passed
-    progress_instance.completed = passed
-    if passed:
-        if not progress_instance.completed_at:
+    if progress_instance.completed:
+        _sync_quiz_totals(progress_instance, total_questions)
+        progress_instance.save()
+        return {
+            'completed': True,
+            'failed': False,
+            'is_correct': True,
+            'hearts_left': progress_instance.quiz_hearts_left,
+            'current_question_index': progress_instance.quiz_current_question_index,
+            'correct_count': progress_instance.quiz_correct_count,
+            'total_questions': total_questions,
+            'max_hearts': QUIZ_MAX_HEARTS,
+            'newly_completed': False,
+        }
+
+    current_question_index = progress_instance.quiz_current_question_index
+    if not isinstance(current_question_index, int) or current_question_index < 0:
+        current_question_index = 0
+        progress_instance.quiz_current_question_index = 0
+
+    if current_question_index >= total_questions:
+        current_question_index = total_questions - 1
+        progress_instance.quiz_current_question_index = current_question_index
+
+    submitted_question_index = current_question_index
+    if isinstance(question_index, int) and 0 <= question_index < total_questions:
+        submitted_question_index = question_index
+
+    if submitted_question_index != current_question_index:
+        _sync_quiz_totals(progress_instance, total_questions)
+        progress_instance.save()
+        return {
+            'completed': progress_instance.completed,
+            'failed': False,
+            'is_correct': False,
+            'hearts_left': progress_instance.quiz_hearts_left,
+            'current_question_index': progress_instance.quiz_current_question_index,
+            'correct_count': progress_instance.quiz_correct_count,
+            'total_questions': total_questions,
+            'max_hearts': QUIZ_MAX_HEARTS,
+            'newly_completed': False,
+        }
+
+    current_question = questions[current_question_index]
+    correct_index = current_question.get('correct_index')
+    is_correct = isinstance(selected_answer, int) and selected_answer == correct_index
+    newly_completed = False
+    failed = False
+
+    if is_correct:
+        progress_instance.quiz_correct_count += 1
+        progress_instance.quiz_current_question_index += 1
+        if progress_instance.quiz_current_question_index >= total_questions:
+            newly_completed = not progress_instance.completed
+            progress_instance.quiz_passed = True
+            progress_instance.completed = True
             progress_instance.completed_at = timezone.now()
+            progress_instance.quiz_attempts += 1
+            progress_instance.quiz_current_question_index = total_questions
     else:
-        progress_instance.completed_at = None
+        if progress_instance.quiz_hearts_left > 0:
+            progress_instance.quiz_hearts_left -= 1
+        if progress_instance.quiz_hearts_left == 0:
+            failed = True
+            progress_instance.quiz_attempts += 1
+            _reset_quiz_runtime(progress_instance, total_questions)
+
+    _sync_quiz_totals(progress_instance, total_questions)
     progress_instance.save()
 
-    if newly_passed:
+    if newly_completed:
         award_xp(
             user=progress_instance.user,
             source='quiz',
@@ -109,8 +197,13 @@ def submit_quiz_lesson(progress_instance, selected_answers):
         )
 
     return {
-        'score': score,
+        'completed': progress_instance.completed,
+        'failed': failed,
+        'is_correct': is_correct,
+        'hearts_left': progress_instance.quiz_hearts_left,
+        'current_question_index': progress_instance.quiz_current_question_index,
+        'correct_count': progress_instance.quiz_correct_count,
         'total_questions': total_questions,
-        'passed': passed,
-        'newly_passed': newly_passed,
+        'max_hearts': QUIZ_MAX_HEARTS,
+        'newly_completed': newly_completed,
     }

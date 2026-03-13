@@ -20,6 +20,9 @@ class LessonProgress(BaseModel):
     quiz_total_questions = models.PositiveIntegerField(default=0)
     quiz_passed = models.BooleanField(default=False)
     quiz_attempts = models.PositiveIntegerField(default=0)
+    quiz_hearts_left = models.PositiveIntegerField(default=5)
+    quiz_current_question_index = models.PositiveIntegerField(default=0)
+    quiz_correct_count = models.PositiveIntegerField(default=0)
     completed = models.BooleanField(default=False)
     completed_at = models.DateTimeField(null=True, blank=True)
 
