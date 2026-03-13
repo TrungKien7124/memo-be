@@ -116,8 +116,13 @@ Course → Module (ordered) → Lesson (video | text | quiz)
 - `lesson_type=video`: dùng `video_url` + `min_watch_time`
 - `lesson_type=text`: dùng `content_markdown`
 - `lesson_type=quiz`: dùng `quiz_questions` (mỗi câu 4 đáp án, 1 đáp án đúng)
-- Mỗi module chỉ có tối đa 1 bài kiểm tra cuối: `is_final=true` (chỉ áp dụng cho `lesson_type=quiz`)
-- Rule mở khóa module: user phải pass final quiz của module hiện tại (>=80%) thì module kế tiếp mới mở.
+- Quiz runtime dùng 5 tim (`quiz_hearts_left=5`), sai 1 câu trừ 1 tim.
+- Hết tim (`0`) thì fail lesson quiz và reset lại lesson quiz từ đầu.
+- Lesson quiz chỉ hoàn thành khi đúng toàn bộ câu hỏi theo thứ tự.
+- Rule mở khóa lesson/module theo tuần tự completed:
+  - Chỉ mở lesson tiếp theo khi lesson hiện tại completed.
+  - Chỉ mở module tiếp theo khi toàn bộ lesson của module hiện tại completed.
+- Trường `is_final` giữ tạm để tương thích dữ liệu cũ, không dùng trong runtime unlock hiện tại.
 - Lesson hoàn thành khi `watched_seconds >= min_watch_time` (mặc định 120s)
 - Hoàn thành lesson → cộng XP
 - Trang "tham gia khóa học" thiết kế sẵn cho payment (hiện miễn phí)
@@ -240,7 +245,7 @@ User Text → LLM (OpenAI/Gemini) → Response Text
                      │ video_url    │  │ ipa          │
                      │ content_md   │  │              │
                      │ quiz_questions│ │              │
-                     │ is_final     │  │              │
+                     │ is_final*    │  │              │
                      │ min_watch_time│ │              │
                      └──────┬───────┘  │ audio_url    │
                             │          │ image_url    │
@@ -248,15 +253,16 @@ User Text → LLM (OpenAI/Gemini) → Response Text
                      ┌────────────────┐└──────┬───────┘
                      │lesson_progress │       │
                      │────────────────│       ▼
-                     │ user_id (FK)   │┌────────────────┐
-                     │ lesson_id (FK) ││ card_srs_state │
-                     │ watched_seconds││────────────────│
-                     │ completed      ││ card_id(PK,FK) │
-                     │ completed_at   ││ stage          │
-                     │ PK: (user,less)││ interval_days  │
-                     └────────────────┘│ due_date  ◄─IDX│
-                                       │ last_review    │
-                                       └────────────────┘
+                     │ user_id (FK)    │┌────────────────┐
+                     │ lesson_id (FK)  ││ card_srs_state │
+                     │ watched_seconds ││────────────────│
+                     │ quiz_hearts_left││ card_id(PK,FK) │
+                     │ quiz_question_idx││ stage         │
+                     │ quiz_correct_cnt││ interval_days  │
+                     │ completed       ││ due_date  ◄─IDX│
+                     │ completed_at    ││ last_review    │
+                     │ PK: (user,less) │└────────────────┘
+                     └────────────────┘
 
 ┌──────────────────┐     ┌────────────────────┐
 │ review_sessions  │     │  card_review_log   │
@@ -430,12 +436,13 @@ memo-be/be/
 3. Khi watched_seconds >= min_watch_time    → completed = true, cộng XP
 ```
 
-**Quiz lesson (bao gồm final module quiz):**
+**Quiz lesson (hearts runtime):**
 ```
 1. Admin tạo lesson_type=quiz với quiz_questions
-2. (Tùy chọn) set is_final=true để đánh dấu bài kiểm tra cuối module
-3. FE submit selected_answers, BE chấm điểm và lưu score/attempt/pass
-4. Nếu quiz là final quiz và đạt >=80% thì mở khóa module kế tiếp
+2. FE submit từng câu (`question_index`, `selected_answer`)
+3. BE chấm câu hiện tại: đúng thì tăng tiến độ, sai thì trừ tim
+4. Tim = 0 → fail lesson quiz + reset lại tiến trình câu hỏi từ đầu
+5. Đúng toàn bộ câu hỏi theo thứ tự → completed=true + cộng XP (lần đầu)
 ```
 
 **Speaking Practice:**
