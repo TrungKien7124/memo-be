@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     'apps.app_server',
     'apps.srs',
     'apps.ai',
+    'apps.lesson_ingestion',
 ]
 
 MIDDLEWARE = [
