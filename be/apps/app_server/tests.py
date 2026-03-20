@@ -467,7 +467,11 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.trigger_source, LessonIngestionTriggerSource.LESSON_DELETED)
         mock_delay.assert_called_once_with(job.id)
 
-    def test_celery_task_transitions_job_to_completed(self):
+    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.index_documents')
+    def test_celery_task_transitions_job_to_completed(self, mock_index_documents):
+        mock_index_documents.side_effect = lambda documents, metadatas=None: [
+            f'vec-{i}' for i in range(len(documents))
+        ]
         lesson = Lesson.objects.create(
             module=self.module,
             title='Task Lesson',

@@ -21,6 +21,15 @@ class LessonProgressViewSet(CoreModelViewSet):
     def get_queryset(self):
         return LessonProgress.objects.filter(user=self.request.user).select_related('lesson')
 
+    def _build_response_payload(self, progress_instance, quiz_result=None):
+        serialized_progress = dict(self.get_serializer(progress_instance).data)
+        if quiz_result is not None:
+            serialized_progress['quiz_runtime'] = {
+                **quiz_result,
+                'max_hearts': QUIZ_MAX_HEARTS,
+            }
+        return {'data': serialized_progress}
+
     def create(self, request, *args, **kwargs):
         lesson_id = request.data.get('lesson')
         progress, created = LessonProgress.objects.get_or_create(
@@ -44,13 +53,7 @@ class LessonProgressViewSet(CoreModelViewSet):
             complete_non_quiz_lesson(progress, watched_seconds=watched_seconds, force_complete=force_complete)
             quiz_result = None
 
-        serializer = self.get_serializer(progress)
-        payload = {'data': serializer.data}
-        if quiz_result is not None:
-            payload['quiz_result'] = {
-                **quiz_result,
-                'max_hearts': QUIZ_MAX_HEARTS,
-            }
+        payload = self._build_response_payload(progress, quiz_result=quiz_result)
         return Response(
             payload,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
@@ -75,11 +78,5 @@ class LessonProgressViewSet(CoreModelViewSet):
             complete_non_quiz_lesson(instance, watched_seconds=watched_seconds, force_complete=force_complete)
             quiz_result = None
 
-        serializer = self.get_serializer(instance)
-        payload = {'data': serializer.data}
-        if quiz_result is not None:
-            payload['quiz_result'] = {
-                **quiz_result,
-                'max_hearts': QUIZ_MAX_HEARTS,
-            }
+        payload = self._build_response_payload(instance, quiz_result=quiz_result)
         return Response(payload)

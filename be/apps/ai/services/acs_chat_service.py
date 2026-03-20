@@ -37,7 +37,7 @@ def build_messages_for_api(conversation_messages, topic=''):
     return api_messages
 
 
-def chat_with_ai(conversation, user_message_text):
+def chat_with_ai(conversation, user_message_text, *, lesson=None):
     """
     Send user message to AI and return AI response text.
     Saves both user and AI messages to the conversation.
@@ -58,7 +58,10 @@ def chat_with_ai(conversation, user_message_text):
 
     rag_enabled = getattr(settings, 'AI_RAG_ENABLED', False)
     if rag_enabled:
-        context_docs = retrieve_context(query=user_message_text)
+        if lesson is not None:
+            context_docs = retrieve_context(query=user_message_text, filters={'lesson_id': str(lesson.id)})
+        else:
+            context_docs = retrieve_context(query=user_message_text)
         ai_response_text = llm.chat_completion_with_context(
             api_messages,
             context_documents=context_docs,

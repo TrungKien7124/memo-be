@@ -11,6 +11,13 @@ class Conversation(BaseModel):
         related_name='conversations',
     )
     topic = models.CharField(max_length=255, blank=True, default='')
+    lesson = models.ForeignKey(
+        'app_server.Lesson',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_conversations',
+    )
 
     class Meta:
         db_table = 'conversations'
