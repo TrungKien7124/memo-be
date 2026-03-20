@@ -1,7 +1,11 @@
+from datetime import timedelta
+
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from unittest.mock import patch
+
+from django.utils import timezone
 
 from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
 from apps.app_server.models.implemented.cms_lesson_model import (
@@ -13,6 +17,9 @@ from apps.app_server.models.implemented.cms_lesson_model import (
 from apps.app_server.models.implemented.cms_module_model import Module
 from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
 from apps.app_server.models.implemented.lms_lesson_progress_model import LessonProgress
+from apps.app_server.models.implemented.gms_xp_transaction_model import XPTransaction
+from apps.app_server.models.implemented.gms_user_xp_model import UserXP
+from apps.app_server.services.gms_xp_service import XP_AMOUNTS
 from apps.app_server.serializers.implemented.iam_auth_serializer import get_tokens_for_user
 from apps.lesson_ingestion.models import (
     LessonIngestionJob,
@@ -246,6 +253,90 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
         self.assertIn('total_xp', response.data['data'])
+
+    def test_xp_endpoint_includes_daily_goal_streak_last_seven_days(self):
+        daily_goal = XP_AMOUNTS['review']
+
+        today = timezone.now()
+        yesterday = today - timedelta(days=1)
+
+        XPTransaction.objects.create(
+            user=self.user,
+            xp_amount=daily_goal,
+            source='review',
+            source_id=None,
+            created_at=today,
+        )
+        XPTransaction.objects.create(
+            user=self.user,
+            xp_amount=1,
+            source='lesson',
+            source_id=None,
+            created_at=yesterday,
+        )
+
+        total_xp = daily_goal + 1
+        user_xp, _ = UserXP.objects.get_or_create(user=self.user)
+        user_xp.total_xp = total_xp
+        user_xp.weekly_xp = total_xp
+        user_xp.monthly_xp = total_xp
+        user_xp.save(update_fields=['total_xp', 'weekly_xp', 'monthly_xp', 'updated_at'])
+
+        response = self.client.get('/api/gms/xp/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = response.data['data']
+
+        self.assertEqual(payload['daily_goal'], daily_goal)
+        self.assertEqual(payload['streak'], 1)
+        self.assertEqual(len(payload['last_seven_days']), 7)
+        self.assertTrue(payload['last_seven_days'][-1])
+        self.assertFalse(payload['last_seven_days'][-2])
+
+    def test_lesson_completion_awards_xp_idempotently(self):
+        from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_VIDEO
+
+        self.assertEqual(self.video_lesson.lesson_type, LESSON_TYPE_VIDEO)
+
+        user_xp, _ = UserXP.objects.get_or_create(user=self.user)
+        start_total = user_xp.total_xp
+
+        payload = {'lesson': str(self.video_lesson.id), 'watched_seconds': self.video_lesson.min_watch_time}
+        first = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        self.assertIn('data', first.data)
+        self.assertTrue(first.data['data']['completed'])
+
+        user_xp.refresh_from_db()
+        self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['lesson'])
+
+        second = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        self.assertIn('data', second.data)
+        self.assertTrue(second.data['data']['completed'])
+
+        user_xp.refresh_from_db()
+        self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['lesson'])
+
+    def test_quiz_completion_awards_xp_idempotently(self):
+        user_xp, _ = UserXP.objects.get_or_create(user=self.user)
+        start_total = user_xp.total_xp
+
+        payload = {
+            'lesson': str(self.quiz_lesson.id),
+            'question_index': 0,
+            'selected_answer': 0,
+        }
+        first = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        self.assertIn('data', first.data)
+        self.assertTrue(first.data['data']['quiz_runtime']['completed'])
+
+        user_xp.refresh_from_db()
+        self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['quiz'])
+
+        second = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        self.assertIn('data', second.data)
+        self.assertTrue(second.data['data']['quiz_runtime']['completed'])
+
+        user_xp.refresh_from_db()
+        self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['quiz'])
 
 
 class LessonIngestionSchedulingAPITestCase(APITestCase):

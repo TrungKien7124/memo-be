@@ -334,6 +334,11 @@ class SRSContractAPITestCase(APITestCase):
         self.assertEqual(item['cards_reviewed'], 1)
         self.assertEqual(item['xp_earned'], XP_AMOUNTS['review'])
 
+        # XP summary endpoint must reflect review-awarded XP.
+        xp_response = self.client.get('/api/gms/xp/')
+        self.assertEqual(xp_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(xp_response.data['data']['total_xp'], XP_AMOUNTS['review'])
+
     def test_review_session_create_returns_canonical_envelope_and_initial_summary(self):
         response = self.client.post('/api/rse/review-sessions/', {}, format='json')
 

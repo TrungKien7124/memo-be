@@ -1,4 +1,9 @@
+from datetime import timedelta
+
 from django.db import transaction
+from django.db.models import Sum
+from django.db.models.functions import TruncDate
+from django.utils import timezone
 
 from apps.app_server.models.implemented.gms_xp_transaction_model import XPTransaction
 from apps.app_server.models.implemented.gms_user_xp_model import UserXP
@@ -9,6 +14,55 @@ XP_AMOUNTS = {
     'quiz': 20,
     'speaking': 30,
 }
+
+DAILY_GOAL_XP = XP_AMOUNTS['review']
+
+
+def _get_last_seven_days_dates(today_date):
+    start_date = today_date - timedelta(days=6)
+    return [start_date + timedelta(days=i) for i in range(7)]
+
+
+def get_daily_xp_totals(user, start_date, end_date):
+    """
+    Returns a mapping: { date -> total_xp } for the inclusive date range.
+    """
+    rows = (
+        XPTransaction.objects.filter(
+            user=user,
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+        )
+        .annotate(day=TruncDate('created_at'))
+        .values('day')
+        .annotate(total=Sum('xp_amount'))
+    )
+
+    return {row['day']: row['total'] or 0 for row in rows}
+
+
+def compute_xp_streak_and_last7(user, daily_goal_xp=DAILY_GOAL_XP, today=None):
+    today_date = today or timezone.now().date()
+    dates = _get_last_seven_days_dates(today_date)
+    daily_totals = get_daily_xp_totals(user, dates[0], dates[-1])
+
+    last_seven_days = [daily_totals.get(d, 0) >= daily_goal_xp for d in dates]
+
+    streak = 0
+    for offset in range(7):
+        day = today_date - timedelta(days=offset)
+        if daily_totals.get(day, 0) >= daily_goal_xp:
+            streak += 1
+        else:
+            break
+
+    return {
+        'daily_goal': daily_goal_xp,
+        'today_xp': daily_totals.get(today_date, 0),
+        'streak': streak,
+        # ordered from oldest -> newest (today at index 6)
+        'last_seven_days': last_seven_days,
+    }
 
 
 def award_xp(user, source, source_id=None, xp_amount=None):
