@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Min, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
@@ -41,20 +41,41 @@ def get_daily_xp_totals(user, start_date, end_date):
     return {row['day']: row['total'] or 0 for row in rows}
 
 
-def compute_xp_streak_and_last7(user, daily_goal_xp=DAILY_GOAL_XP, today=None):
-    today_date = today or timezone.now().date()
-    dates = _get_last_seven_days_dates(today_date)
-    daily_totals = get_daily_xp_totals(user, dates[0], dates[-1])
+def _get_daily_xp_totals_from_earliest_transaction(user, today_date):
+    earliest_dt = XPTransaction.objects.filter(user=user).aggregate(Min('created_at'))['created_at__min']
+    if not earliest_dt:
+        return {}
 
+    earliest_date = earliest_dt.date()
+    rows = (
+        XPTransaction.objects.filter(
+            user=user,
+            created_at__date__gte=earliest_date,
+            created_at__date__lte=today_date,
+        )
+        .annotate(day=TruncDate('created_at'))
+        .values('day')
+        .annotate(total=Sum('xp_amount'))
+    )
+    return {row['day']: row['total'] or 0 for row in rows}
+
+
+def compute_xp_streak_and_last7(user, daily_goal_xp=DAILY_GOAL_XP, today=None):
+    """
+    Streak is consecutive days ending today where daily XP >= daily_goal_xp.
+    Unlike last_seven_days, streak is NOT capped to 7 days.
+    """
+    today_date = today or timezone.now().date()
+    daily_totals = _get_daily_xp_totals_from_earliest_transaction(user, today_date)
+
+    dates = _get_last_seven_days_dates(today_date)
     last_seven_days = [daily_totals.get(d, 0) >= daily_goal_xp for d in dates]
 
     streak = 0
-    for offset in range(7):
-        day = today_date - timedelta(days=offset)
-        if daily_totals.get(day, 0) >= daily_goal_xp:
-            streak += 1
-        else:
-            break
+    day = today_date
+    while daily_totals.get(day, 0) >= daily_goal_xp:
+        streak += 1
+        day -= timedelta(days=1)
 
     return {
         'daily_goal': daily_goal_xp,
@@ -62,6 +83,54 @@ def compute_xp_streak_and_last7(user, daily_goal_xp=DAILY_GOAL_XP, today=None):
         'streak': streak,
         # ordered from oldest -> newest (today at index 6)
         'last_seven_days': last_seven_days,
+    }
+
+
+def _get_week_date_range(today_date):
+    # Monday-based calendar week.
+    start = today_date - timedelta(days=today_date.weekday())
+    end = start + timedelta(days=6)
+    return start, end
+
+
+def _get_month_date_range(today_date):
+    start = today_date.replace(day=1)
+    if today_date.month == 12:
+        next_month = today_date.replace(year=today_date.year + 1, month=1, day=1)
+    else:
+        next_month = today_date.replace(month=today_date.month + 1, day=1)
+    end = next_month - timedelta(days=1)
+    return start, end
+
+
+def get_weekly_xp(user, today=None):
+    today_date = today or timezone.now().date()
+    start_date, end_date = _get_week_date_range(today_date)
+    result = XPTransaction.objects.filter(
+        user=user,
+        created_at__date__gte=start_date,
+        created_at__date__lte=end_date,
+    ).aggregate(total=Sum('xp_amount'))
+    return result['total'] or 0
+
+
+def get_monthly_xp(user, today=None):
+    today_date = today or timezone.now().date()
+    start_date, end_date = _get_month_date_range(today_date)
+    result = XPTransaction.objects.filter(
+        user=user,
+        created_at__date__gte=start_date,
+        created_at__date__lte=end_date,
+    ).aggregate(total=Sum('xp_amount'))
+    return result['total'] or 0
+
+
+def compute_xp_dashboard_fields(user, today=None):
+    streak_fields = compute_xp_streak_and_last7(user, today=today)
+    return {
+        **streak_fields,
+        'weekly_xp': get_weekly_xp(user, today=today),
+        'monthly_xp': get_monthly_xp(user, today=today),
     }
 
 

@@ -257,29 +257,29 @@ class CoreContractAPITestCase(APITestCase):
     def test_xp_endpoint_includes_daily_goal_streak_last_seven_days(self):
         daily_goal = XP_AMOUNTS['review']
 
-        today = timezone.now()
-        yesterday = today - timedelta(days=1)
+        today_dt = timezone.now()
+        today_date = today_dt.date()
+        yesterday_dt = today_dt - timedelta(days=1)
 
         XPTransaction.objects.create(
             user=self.user,
             xp_amount=daily_goal,
             source='review',
             source_id=None,
-            created_at=today,
+            created_at=today_dt,
         )
         XPTransaction.objects.create(
             user=self.user,
             xp_amount=1,
             source='lesson',
             source_id=None,
-            created_at=yesterday,
+            created_at=yesterday_dt,
         )
 
-        total_xp = daily_goal + 1
         user_xp, _ = UserXP.objects.get_or_create(user=self.user)
-        user_xp.total_xp = total_xp
-        user_xp.weekly_xp = total_xp
-        user_xp.monthly_xp = total_xp
+        user_xp.total_xp = daily_goal + 1
+        user_xp.weekly_xp = 0
+        user_xp.monthly_xp = 0
         user_xp.save(update_fields=['total_xp', 'weekly_xp', 'monthly_xp', 'updated_at'])
 
         response = self.client.get('/api/gms/xp/')
@@ -291,6 +291,31 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(len(payload['last_seven_days']), 7)
         self.assertTrue(payload['last_seven_days'][-1])
         self.assertFalse(payload['last_seven_days'][-2])
+
+        # weekly_xp/monthly_xp are computed from XPTransaction in the current
+        # calendar week and month containing "today".
+        week_start = today_date - timedelta(days=today_date.weekday())
+        week_end = week_start + timedelta(days=6)
+
+        month_start = today_date.replace(day=1)
+        if today_date.month == 12:
+            next_month = today_date.replace(year=today_date.year + 1, month=1, day=1)
+        else:
+            next_month = today_date.replace(month=today_date.month + 1, day=1)
+        month_end = next_month - timedelta(days=1)
+
+        expected_weekly = 0
+        for d, amount in [(today_date, daily_goal), (yesterday_dt.date(), 1)]:
+            if week_start <= d <= week_end:
+                expected_weekly += amount
+
+        expected_monthly = 0
+        for d, amount in [(today_date, daily_goal), (yesterday_dt.date(), 1)]:
+            if month_start <= d <= month_end:
+                expected_monthly += amount
+
+        self.assertEqual(payload['weekly_xp'], expected_weekly)
+        self.assertEqual(payload['monthly_xp'], expected_monthly)
 
     def test_lesson_completion_awards_xp_idempotently(self):
         from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_VIDEO

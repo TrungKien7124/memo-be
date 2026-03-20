@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 
 from apps.app_server.models.implemented.gms_user_xp_model import UserXP
 from apps.app_server.serializers.implemented.gms_serializer import UserXPSerializer
-from apps.app_server.services.gms_xp_service import compute_xp_streak_and_last7
+from apps.app_server.services.gms_xp_service import compute_xp_dashboard_fields
 
 
 class MyXPView(APIView):
@@ -13,7 +13,7 @@ class MyXPView(APIView):
     def get(self, request):
         user_xp, _ = UserXP.objects.get_or_create(user=request.user)
         serializer = UserXPSerializer(user_xp)
-        computed = compute_xp_streak_and_last7(user=request.user)
+        computed = compute_xp_dashboard_fields(user=request.user)
         return Response({'data': {**serializer.data, **computed}})
 
 
