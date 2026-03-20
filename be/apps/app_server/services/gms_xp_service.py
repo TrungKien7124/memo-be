@@ -86,14 +86,14 @@ def compute_xp_streak_and_last7(user, daily_goal_xp=DAILY_GOAL_XP, today=None):
     }
 
 
-def _get_week_date_range(today_date):
+def get_week_date_range(today_date):
     # Monday-based calendar week.
     start = today_date - timedelta(days=today_date.weekday())
     end = start + timedelta(days=6)
     return start, end
 
 
-def _get_month_date_range(today_date):
+def get_month_date_range(today_date):
     start = today_date.replace(day=1)
     if today_date.month == 12:
         next_month = today_date.replace(year=today_date.year + 1, month=1, day=1)
@@ -105,7 +105,7 @@ def _get_month_date_range(today_date):
 
 def get_weekly_xp(user, today=None):
     today_date = today or timezone.now().date()
-    start_date, end_date = _get_week_date_range(today_date)
+    start_date, end_date = get_week_date_range(today_date)
     result = XPTransaction.objects.filter(
         user=user,
         created_at__date__gte=start_date,
@@ -116,7 +116,7 @@ def get_weekly_xp(user, today=None):
 
 def get_monthly_xp(user, today=None):
     today_date = today or timezone.now().date()
-    start_date, end_date = _get_month_date_range(today_date)
+    start_date, end_date = get_month_date_range(today_date)
     result = XPTransaction.objects.filter(
         user=user,
         created_at__date__gte=start_date,

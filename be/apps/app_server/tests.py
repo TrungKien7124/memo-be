@@ -363,6 +363,107 @@ class CoreContractAPITestCase(APITestCase):
         user_xp.refresh_from_db()
         self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['quiz'])
 
+    def test_leaderboard_period_total(self):
+        other_user = User.objects.create_user(
+            email='leaderboard-other@example.com',
+            username='leaderboard-other',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+
+        UserXP.objects.create(
+            user=self.user,
+            total_xp=100,
+            weekly_xp=0,
+            monthly_xp=0,
+        )
+        UserXP.objects.create(
+            user=other_user,
+            total_xp=50,
+            weekly_xp=0,
+            monthly_xp=0,
+        )
+
+        response = self.client.get('/api/gms/leaderboard/?period=total')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('data', response.data)
+        self.assertTrue(len(response.data['data']) >= 1)
+        self.assertEqual(response.data['data'][0]['xp'], 100)
+
+    def test_leaderboard_period_weekly(self):
+        other_user = User.objects.create_user(
+            email='leaderboard-weekly-other@example.com',
+            username='leaderboard-weekly-other',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+
+        today_date = timezone.now().date()
+        week_start = today_date - timedelta(days=today_date.weekday())
+        week_end = week_start + timedelta(days=6)
+
+        XPTransaction.objects.create(
+            user=self.user,
+            xp_amount=10,
+            source='review',
+            source_id=None,
+            created_at=timezone.now() if week_start <= today_date <= week_end else timezone.now(),
+        )
+        XPTransaction.objects.create(
+            user=other_user,
+            xp_amount=30,
+            source='review',
+            source_id=None,
+            created_at=timezone.now() if week_start <= today_date <= week_end else timezone.now(),
+        )
+
+        response = self.client.get('/api/gms/leaderboard/?period=weekly')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('data', response.data)
+        self.assertTrue(len(response.data['data']) >= 1)
+        self.assertEqual(response.data['data'][0]['xp'], 30)
+
+    def test_leaderboard_period_monthly(self):
+        other_user = User.objects.create_user(
+            email='leaderboard-monthly-other@example.com',
+            username='leaderboard-monthly-other',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+
+        today_date = timezone.now().date()
+        month_start = today_date.replace(day=1)
+        if today_date.month == 12:
+            next_month = today_date.replace(year=today_date.year + 1, month=1, day=1)
+        else:
+            next_month = today_date.replace(month=today_date.month + 1, day=1)
+        month_end = next_month - timedelta(days=1)
+
+        XPTransaction.objects.create(
+            user=self.user,
+            xp_amount=5,
+            source='lesson',
+            source_id=None,
+            created_at=timezone.now() if month_start <= today_date <= month_end else timezone.now(),
+        )
+        XPTransaction.objects.create(
+            user=other_user,
+            xp_amount=25,
+            source='lesson',
+            source_id=None,
+            created_at=timezone.now() if month_start <= today_date <= month_end else timezone.now(),
+        )
+
+        response = self.client.get('/api/gms/leaderboard/?period=monthly')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('data', response.data)
+        self.assertTrue(len(response.data['data']) >= 1)
+        self.assertEqual(response.data['data'][0]['xp'], 25)
+
+    def test_leaderboard_invalid_period_rejected(self):
+        response = self.client.get('/api/gms/leaderboard/?period=invalid')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
 
 class LessonIngestionSchedulingAPITestCase(APITestCase):
     def setUp(self):
