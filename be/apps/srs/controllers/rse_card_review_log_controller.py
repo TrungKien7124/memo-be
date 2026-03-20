@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.app_server.exceptions.exception_handler import error_response
+from apps.srs.models.rse_review_session_model import ReviewSession
 from apps.srs.models.srs_card_srs_state_model import CardSRSState
 from apps.srs.models.rse_card_review_log_model import CardReviewLog
 from apps.srs.serializers.rse_card_review_log_serializer import (
@@ -23,6 +24,15 @@ class CardReviewLogCreateView(APIView):
         data = serializer.validated_data
 
         try:
+            review_session = ReviewSession.objects.get(id=data['session'], user=request.user)
+        except ReviewSession.DoesNotExist:
+            return error_response(
+                request=request,
+                message='Review session not found.',
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
             srs_state = CardSRSState.objects.select_related('card').get(
                 card_id=data['card'],
                 card__user=request.user,
@@ -39,7 +49,7 @@ class CardReviewLogCreateView(APIView):
         review_log = CardReviewLog.objects.create(
             card_id=data['card'],
             user=request.user,
-            session_id=data['session'],
+            session=review_session,
             choice=data['choice'],
             **log_data,
         )
