@@ -255,6 +255,59 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         mock_retrieve.assert_not_called()
 
     @override_settings(AI_RAG_ENABLED=True)
+    def test_lesson_retry_after_index_pending_reuses_conversation_and_then_ready(self):
+        _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
+
+        fake_llm = MagicMock()
+        fake_llm.chat_completion_with_context.return_value = 'lesson grounded reply'
+
+        with (
+            patch('apps.ai.services.acs_chat_service.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.providers.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.acs_chat_service.retrieve_context', return_value=['ctx']) as mock_retrieve,
+        ):
+            first_response = self.client.post(
+                '/api/acs/chat/',
+                {'lesson_id': str(lesson.id), 'message': 'Explain'},
+                format='json',
+            )
+
+            self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+            first_payload = first_response.data['data']
+            self.assertEqual(first_payload['lesson_context_status'], 'index_pending')
+            self.assertIsNone(first_payload['ai_message'])
+            self.assertEqual(fake_llm.chat_completion_with_context.call_count, 0)
+            mock_retrieve.assert_not_called()
+
+            conversation_id = first_payload['conversation_id']
+            conversation = Conversation.objects.get(id=conversation_id, user=self.teacher)
+            self.assertEqual(conversation.lesson_id, lesson.id)
+            self.assertEqual(conversation.messages.count(), 0)
+
+            # Once indexing becomes ready, the same conversation should proceed to LLM.
+            self._create_ingestion_job_and_active_chunks(lesson=lesson)
+
+            second_response = self.client.post(
+                '/api/acs/chat/',
+                {
+                    'lesson_id': str(lesson.id),
+                    'conversation_id': conversation_id,
+                    'message': 'Explain again',
+                },
+                format='json',
+            )
+
+            self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+            second_payload = second_response.data['data']
+            self.assertEqual(second_payload['lesson_context_status'], 'ready')
+            self.assertIsNotNone(second_payload['ai_message'])
+            self.assertGreater(fake_llm.chat_completion_with_context.call_count, 0)
+            mock_retrieve.assert_called()
+
+            conversation.refresh_from_db()
+            self.assertEqual(conversation.messages.count(), 2)
+
+    @override_settings(AI_RAG_ENABLED=True)
     @patch('apps.ai.services.acs_chat_service.get_llm_provider')
     def test_lesson_supported_but_latest_job_failed_returns_index_failed(self, mock_get_llm_provider):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
