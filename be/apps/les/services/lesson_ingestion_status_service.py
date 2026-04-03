@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from django.conf import settings
+
 from apps.app_server.models.implemented.cms_lesson_model import Lesson
-from apps.lesson_ingestion.models import LessonContentChunk, LessonIngestionJob, LessonIngestionJobStatus
-from apps.lesson_ingestion.services.lesson_ingestion_scheduling_service import is_ingestion_supported_lesson
+from apps.les.models import LessonContentChunk, LessonIngestionJob, LessonIngestionJobStatus
+from apps.les.services.lesson_ingestion_scheduling_service import is_ingestion_supported_lesson
 
 
 def _latest_job_summary(job: LessonIngestionJob | None) -> dict | None:
@@ -42,6 +44,22 @@ def get_lesson_ingestion_status(lesson: Lesson) -> dict:
     active_chunk_count = active_chunks_qs.count()
     has_active_chunk_set = active_chunk_count > 0
 
+    active_chunks = list(active_chunks_qs.values('embedding_model', 'metadata_json'))
+    expected_embedding_model = getattr(settings, 'AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+
+    active_chunk_set_has_ingestion_job_id_metadata = all(
+        bool(chunk['metadata_json'] and chunk['metadata_json'].get('ingestion_job_id'))
+        for chunk in active_chunks
+    )
+    active_chunk_set_isolation_ready = (
+        active_chunk_set_has_ingestion_job_id_metadata
+        and len({chunk['metadata_json'].get('ingestion_job_id') for chunk in active_chunks if chunk['metadata_json']}) == 1
+    )
+    active_chunk_set_embedding_model_matches = all(
+        chunk.get('embedding_model') == expected_embedding_model
+        for chunk in active_chunks
+    )
+
     latest_job = LessonIngestionJob.objects.filter(lesson=lesson).order_by('-created_at').first()
     latest_completed_job = (
         LessonIngestionJob.objects.filter(lesson=lesson, status=LessonIngestionJobStatus.COMPLETED)
@@ -75,6 +93,8 @@ def get_lesson_ingestion_status(lesson: Lesson) -> dict:
         'latest_failed_job': _latest_failed_job_summary(latest_failed_job),
         'active_chunk_count': active_chunk_count,
         'has_active_chunk_set': has_active_chunk_set,
+        'active_chunk_set_isolation_ready': active_chunk_set_isolation_ready,
+        'active_chunk_set_embedding_model_matches': active_chunk_set_embedding_model_matches,
         'last_indexed_at': last_indexed_at,
     }
 

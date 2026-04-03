@@ -21,13 +21,13 @@ from apps.app_server.models.implemented.gms_xp_transaction_model import XPTransa
 from apps.app_server.models.implemented.gms_user_xp_model import UserXP
 from apps.app_server.services.gms_xp_service import XP_AMOUNTS
 from apps.app_server.serializers.implemented.iam_auth_serializer import get_tokens_for_user
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonIngestionJob,
     LessonIngestionJobStatus,
     LessonIngestionJobType,
     LessonIngestionTriggerSource,
 )
-from apps.lesson_ingestion.tasks import process_lesson_ingestion_job
+from apps.les.tasks import process_lesson_ingestion_job
 
 
 class CoreContractAPITestCase(APITestCase):
@@ -539,7 +539,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         base.update(overrides)
         return base
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_text_lesson_enqueues_ingest(self, mock_delay):
         payload = self._build_text_lesson_payload()
         response = self.client.post('/api/cms/lessons/', payload, format='json')
@@ -551,7 +551,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.status, LessonIngestionJobStatus.PENDING)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_video_lesson_enqueues_ingest(self, mock_delay):
         payload = self._build_video_lesson_payload()
         response = self.client.post('/api/cms/lessons/', payload, format='json')
@@ -563,7 +563,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.status, LessonIngestionJobStatus.PENDING)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_quiz_lesson_does_not_enqueue_job(self, mock_delay):
         payload = self._build_quiz_lesson_payload()
         response = self.client.post('/api/cms/lessons/', payload, format='json')
@@ -572,7 +572,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(LessonIngestionJob.objects.count(), 0)
         mock_delay.assert_not_called()
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_non_ingestion_fields_does_not_reingest(self, mock_delay):
         create_payload = self._build_text_lesson_payload()
         response = self.client.post('/api/cms/lessons/', create_payload, format='json')
@@ -588,7 +588,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(LessonIngestionJob.objects.count(), 0)
         mock_delay.assert_not_called()
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_ingestion_relevant_fields_enqueues_reingest(self, mock_delay):
         create_payload = self._build_video_lesson_payload()
         response = self.client.post('/api/cms/lessons/', create_payload, format='json')
@@ -611,7 +611,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.status, LessonIngestionJobStatus.PENDING)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_supported_to_quiz_enqueues_delete_index(self, mock_delay):
         create_payload = self._build_text_lesson_payload()
         response = self.client.post('/api/cms/lessons/', create_payload, format='json')
@@ -642,7 +642,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.trigger_source, LessonIngestionTriggerSource.LESSON_UPDATED)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_quiz_to_text_enqueues_ingest(self, mock_delay):
         create_payload = self._build_quiz_lesson_payload()
         response = self.client.post('/api/cms/lessons/', create_payload, format='json')
@@ -667,7 +667,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.trigger_source, LessonIngestionTriggerSource.LESSON_UPDATED)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_delete_supported_lesson_enqueues_delete_index(self, mock_delay):
         create_payload = self._build_video_lesson_payload()
         response = self.client.post('/api/cms/lessons/', create_payload, format='json')
@@ -684,7 +684,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.trigger_source, LessonIngestionTriggerSource.LESSON_DELETED)
         mock_delay.assert_called_once_with(job.id)
 
-    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.index_documents')
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
     def test_celery_task_transitions_job_to_completed(self, mock_index_documents):
         mock_index_documents.side_effect = lambda documents, metadatas=None: [
             f'vec-{i}' for i in range(len(documents))

@@ -17,7 +17,7 @@ from apps.app_server.models.implemented.cms_lesson_model import (
 from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
 from apps.app_server.models.implemented.cms_module_model import Module
 from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
     LessonIngestionJobStatus,
@@ -128,7 +128,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
             char_end=len('normalized seed'),
             vector_document_id='vec-seed',
             embedding_provider='chroma',
-            embedding_model='default',
+            embedding_model='nomic-embed-text',
             metadata_json={
                 'lesson_id': str(lesson.id),
                 'module_id': str(lesson.module.id),
@@ -136,6 +136,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
                 'lesson_type': lesson.lesson_type,
                 'source_type': 'text_markdown',
                 'chunk_index': 0,
+                'ingestion_job_id': str(ingestion_job.id),
             },
             is_active=True,
         )
@@ -158,8 +159,12 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
 
     @override_settings(AI_RAG_ENABLED=True)
     def test_lesson_aware_request_success_ready_filters_retrieval_by_lesson_id(self):
-        _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
-        _, _, _ = self._create_ingestion_job_and_active_chunks(lesson=lesson)
+        _, _, lesson = _create_course_module_lesson(
+            teacher=self.teacher,
+            lesson_type=LESSON_TYPE_TEXT,
+            content_markdown='hello',
+        )
+        ingestion_job, _, _ = self._create_ingestion_job_and_active_chunks(lesson=lesson)
 
         retrieve_mock = MagicMock()
         retrieve_docs = ['chunk a', 'chunk b']
@@ -206,7 +211,10 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         # Retrieval must be lesson-scoped.
         mock_retrieve.assert_called()
         _, kwargs = mock_retrieve.call_args
-        self.assertEqual(kwargs['filters'], {'lesson_id': str(lesson.id)})
+        self.assertEqual(
+            kwargs['filters'],
+            {'lesson_id': str(lesson.id), 'ingestion_job_id': str(ingestion_job.id)},
+        )
 
         conversation_id = payload['conversation_id']
         conversation = Conversation.objects.get(id=conversation_id, user=self.teacher)

@@ -3,8 +3,10 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.app_server.controllers.base.base_controller import CoreModelViewSet
+from apps.app_server.models.implemented.nfs_folder_model import Folder
 from apps.srs.models.rse_review_session_model import ReviewSession
 from apps.srs.serializers.rse_review_session_serializer import ReviewSessionSerializer
 
@@ -18,7 +20,20 @@ class ReviewSessionViewSet(CoreModelViewSet):
         return ReviewSession.objects.filter(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        session = ReviewSession.objects.create(user=request.user)
+        folder_id = request.data.get('folder') or request.data.get('folder_id')
+        folder = None
+        if folder_id:
+            try:
+                # Validate UUID early to avoid confusing errors later.
+                folder_uuid = str(folder_id)
+                folder = Folder.objects.filter(id=folder_uuid, user=request.user).first()
+            except (ValueError, TypeError):
+                raise ValidationError({'folder': 'Invalid folder id.'})
+
+            if not folder:
+                raise NotFound({'folder': 'Folder not found.'})
+
+        session = ReviewSession.objects.create(user=request.user, folder=folder)
         serializer = self.get_serializer(session)
         return Response({'data': serializer.data}, status=status.HTTP_201_CREATED)
 

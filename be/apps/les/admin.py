@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
     LessonSourceDocument,

@@ -12,9 +12,19 @@ QUIZ_MAX_HEARTS = 5
 
 def update_lesson_progress(progress_instance, watched_seconds):
     """
-    Update watched_seconds and auto-complete when threshold is met.
-    Awards XP on first completion.
-    Returns True if lesson was newly completed.
+    Cập nhật tiến độ xem lesson và tự động complete khi đủ thời lượng tối thiểu.
+
+    Args:
+        progress_instance: Bản ghi ``LessonProgress`` cần cập nhật.
+        watched_seconds: Tổng số giây đã xem mà client/backend muốn ghi nhận.
+
+    Returns:
+        ``True`` nếu đây là lần đầu lesson được đánh dấu completed, ngược lại
+        trả ``False``.
+
+    Raises:
+        Exception: Có thể phát sinh từ thao tác ``save()`` hoặc từ quá trình
+            cộng XP.
     """
     progress_instance.watched_seconds = max(progress_instance.watched_seconds, watched_seconds)
 
@@ -40,6 +50,23 @@ def update_lesson_progress(progress_instance, watched_seconds):
 
 
 def complete_non_quiz_lesson(progress_instance, watched_seconds=0, force_complete=False):
+    """
+    Hoàn thành lesson không phải quiz theo rule riêng của từng loại lesson.
+
+    Args:
+        progress_instance: Bản ghi ``LessonProgress`` cần cập nhật.
+        watched_seconds: Số giây xem tối đa muốn đồng bộ vào progress.
+        force_complete: Chỉ áp dụng cho lesson text; nếu ``True`` thì cho phép
+            complete ngay mà không cần rule thời lượng.
+
+    Returns:
+        ``True`` nếu lesson vừa mới được complete ở lần gọi này, ngược lại trả
+        ``False``.
+
+    Raises:
+        Exception: Có thể phát sinh từ thao tác ``save()`` hoặc từ quá trình
+            cộng XP.
+    """
     lesson_type = progress_instance.lesson.lesson_type
     if lesson_type == LESSON_TYPE_QUIZ:
         return False
@@ -70,11 +97,37 @@ def complete_non_quiz_lesson(progress_instance, watched_seconds=0, force_complet
 
 
 def _sync_quiz_totals(progress_instance, total_questions):
+    """
+    Đồng bộ các trường tổng hợp của quiz vào ``LessonProgress``.
+
+    Args:
+        progress_instance: Bản ghi progress quiz đang được xử lý.
+        total_questions: Tổng số câu hỏi của quiz hiện tại.
+
+    Returns:
+        Không trả về giá trị.
+
+    Raises:
+        Không chủ động raise exception.
+    """
     progress_instance.quiz_total_questions = total_questions
     progress_instance.quiz_score = progress_instance.quiz_correct_count
 
 
 def _reset_quiz_runtime(progress_instance, total_questions):
+    """
+    Reset toàn bộ runtime state của quiz về trạng thái bắt đầu.
+
+    Args:
+        progress_instance: Bản ghi progress quiz cần reset.
+        total_questions: Tổng số câu hỏi của quiz để đồng bộ lại summary.
+
+    Returns:
+        Không trả về giá trị.
+
+    Raises:
+        Không chủ động raise exception.
+    """
     progress_instance.quiz_hearts_left = QUIZ_MAX_HEARTS
     progress_instance.quiz_current_question_index = 0
     progress_instance.quiz_correct_count = 0
@@ -85,6 +138,24 @@ def _reset_quiz_runtime(progress_instance, total_questions):
 
 
 def submit_quiz_answer(progress_instance, selected_answer, question_index=None):
+    """
+    Xử lý một lần submit đáp án quiz theo runtime rule 5 hearts.
+
+    Args:
+        progress_instance: Bản ghi ``LessonProgress`` của user cho lesson quiz.
+        selected_answer: Chỉ số đáp án user chọn.
+        question_index: Chỉ số câu hỏi client đang submit. Nếu không khớp với
+            runtime server thì request sẽ không làm thay đổi tiến trình quiz.
+
+    Returns:
+        Dict mô tả trạng thái mới của quiz, gồm completed, failed, is_correct,
+        hearts_left, current_question_index, correct_count, total_questions,
+        max_hearts và newly_completed.
+
+    Raises:
+        Exception: Có thể phát sinh từ thao tác ``save()`` hoặc cộng XP khi
+            quiz được hoàn thành lần đầu.
+    """
     lesson = progress_instance.lesson
     if lesson.lesson_type != LESSON_TYPE_QUIZ:
         return {

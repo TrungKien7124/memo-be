@@ -19,7 +19,18 @@ AI_PROVIDER_LOCAL = 'local'
 
 
 def get_llm_provider():
-    """Return the configured LLM provider singleton."""
+    """
+    Lấy singleton provider cho tác vụ LLM theo cấu hình hiện tại.
+
+    Args:
+        Không có tham số.
+
+    Returns:
+        Instance của provider triển khai ``BaseLLMProvider``.
+
+    Raises:
+        ValueError: Khi ``AI_PROVIDER`` có giá trị không được hỗ trợ.
+    """
     global _llm_instance
     if _llm_instance is not None:
         return _llm_instance
@@ -40,7 +51,19 @@ def get_llm_provider():
 
 
 def get_stt_provider():
-    """Return the configured STT provider singleton."""
+    """
+    Lấy singleton provider cho tác vụ speech-to-text.
+
+    Args:
+        Không có tham số.
+
+    Returns:
+        Instance của provider triển khai ``BaseSTTProvider``.
+
+    Raises:
+        ValueError: Khi ``AI_STT_PROVIDER`` không hợp lệ hoặc không được hỗ
+            trợ.
+    """
     global _stt_instance
     if _stt_instance is not None:
         return _stt_instance
@@ -63,7 +86,19 @@ def get_stt_provider():
 
 
 def get_tts_provider():
-    """Return the configured TTS provider singleton."""
+    """
+    Lấy singleton provider cho tác vụ text-to-speech.
+
+    Args:
+        Không có tham số.
+
+    Returns:
+        Instance của provider triển khai ``BaseTTSProvider``.
+
+    Raises:
+        ValueError: Khi ``AI_TTS_PROVIDER`` không hợp lệ hoặc không được hỗ
+            trợ.
+    """
     global _tts_instance
     if _tts_instance is not None:
         return _tts_instance
@@ -86,7 +121,18 @@ def get_tts_provider():
 
 
 def reset_providers():
-    """Reset cached provider instances. Useful for testing."""
+    """
+    Reset toàn bộ provider singleton đã cache.
+
+    Args:
+        Không có tham số.
+
+    Returns:
+        Không trả về giá trị.
+
+    Raises:
+        Không chủ động raise exception.
+    """
     global _llm_instance, _stt_instance, _tts_instance
     _llm_instance = None
     _stt_instance = None

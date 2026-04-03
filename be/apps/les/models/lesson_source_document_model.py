@@ -4,11 +4,21 @@ from apps.app_server.models.base.base_model import BaseModel
 
 
 class LessonSourceDocumentType(models.TextChoices):
+    """Danh sách loại source document mà ingestion hiện hỗ trợ."""
+
     TEXT_MARKDOWN = 'text_markdown', 'Text Markdown'
     VIDEO_URL_TRANSCRIPT = 'video_url_transcript', 'Video URL Transcript'
 
 
 class LessonSourceDocument(BaseModel):
+    """
+    Lưu tài liệu nguồn đã trích xuất cho một lesson ingestion job.
+
+    Mục đích:
+        Là lớp dữ liệu trung gian giữa lesson gốc và các chunk sẽ được tạo ra
+        sau bước chuẩn hóa/chia đoạn.
+    """
+
     lesson = models.ForeignKey(
         'app_server.Lesson',
         on_delete=models.CASCADE,
@@ -36,4 +46,13 @@ class LessonSourceDocument(BaseModel):
         ]
 
     def __str__(self):
+        """
+        Trả về chuỗi mô tả ngắn của source document.
+
+        Returns:
+            Chuỗi chứa lesson title và source type.
+
+        Raises:
+            Không chủ động raise exception.
+        """
         return f'{self.lesson.title} [{self.source_type}]'

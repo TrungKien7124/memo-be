@@ -7,8 +7,8 @@ from apps.app_server.models.implemented.cms_lesson_model import Lesson
 from apps.app_server.serializers.implemented.cms_lesson_serializer import LessonSerializer
 from apps.app_server.permissions.role_permission import IsTeacherOrAdmin
 from apps.app_server.services.lms_unlock_service import get_lesson_status_map
-from apps.lesson_ingestion.models import LessonIngestionTriggerSource
-from apps.lesson_ingestion.services.lesson_ingestion_scheduling_service import (
+from apps.les.models import LessonIngestionTriggerSource
+from apps.les.services.lesson_ingestion_scheduling_service import (
     extract_ingestion_relevant_fields,
     schedule_lesson_index_delete,
     schedule_lesson_ingestion,

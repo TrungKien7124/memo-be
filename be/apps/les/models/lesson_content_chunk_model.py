@@ -4,6 +4,14 @@ from apps.app_server.models.base.base_model import BaseModel
 
 
 class LessonContentChunk(BaseModel):
+    """
+    Lưu từng chunk nội dung đã được tách ra từ source document của lesson.
+
+    Mục đích:
+        Liên kết chunk text trong relational database với document tương ứng
+        trong vector store để retrieval, cleanup và audit dễ theo dõi.
+    """
+
     lesson = models.ForeignKey(
         'app_server.Lesson',
         on_delete=models.CASCADE,
@@ -45,4 +53,13 @@ class LessonContentChunk(BaseModel):
         ]
 
     def __str__(self):
+        """
+        Trả về chuỗi mô tả ngắn của chunk.
+
+        Returns:
+            Chuỗi gồm lesson title và chunk index.
+
+        Raises:
+            Không chủ động raise exception.
+        """
         return f'{self.lesson.title} chunk {self.chunk_index}'

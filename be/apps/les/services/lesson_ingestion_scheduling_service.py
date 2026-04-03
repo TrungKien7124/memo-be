@@ -2,7 +2,7 @@ import hashlib
 import json
 
 from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonIngestionJob,
     LessonIngestionJobStatus,
     LessonIngestionJobType,
@@ -48,7 +48,7 @@ def create_ingestion_job(lesson, job_type, trigger_source, source_version: str) 
 
 def _enqueue_job_processing(job: LessonIngestionJob) -> None:
     # Local import to avoid circular dependency: tasks imports orchestration only.
-    from apps.lesson_ingestion.tasks import process_lesson_ingestion_job
+    from apps.les.tasks import process_lesson_ingestion_job
 
     process_lesson_ingestion_job.delay(job.id)
 

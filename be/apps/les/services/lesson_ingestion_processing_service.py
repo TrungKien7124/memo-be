@@ -6,9 +6,9 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from apps.ai.services.rag.retriever import index_documents
+from apps.ai.services.rag.retriever import delete_documents, index_documents
 from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
     LessonIngestionJobStatus,
@@ -211,8 +211,8 @@ def build_chunk_metadata(lesson, source_type: str, chunk_index: int) -> dict[str
 
 
 def persist_chunk_set(lesson, job: LessonIngestionJob, source_document: LessonSourceDocument, chunks) -> list[LessonContentChunk]:
-    embedding_provider = getattr(settings, 'AI_VECTOR_STORE', 'chroma')
-    embedding_model = 'default'
+    embedding_provider = 'ollama'
+    embedding_model = getattr(settings, 'AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
 
     persisted: list[LessonContentChunk] = []
     for idx, chunk in enumerate(chunks):
@@ -232,6 +232,7 @@ def persist_chunk_set(lesson, job: LessonIngestionJob, source_document: LessonSo
             embedding_model=embedding_model,
             metadata_json={
                 **metadata,
+                'ingestion_job_id': str(job.id),
             },
             is_active=False,
         )
@@ -282,10 +283,45 @@ def activate_chunk_set(lesson, new_chunks: list[LessonContentChunk]) -> None:
     if not new_chunks:
         raise LessonIngestionProcessingError('No chunk set to activate.')
 
+    old_active_qs = LessonContentChunk.objects.filter(lesson=lesson, is_active=True)
+    old_active_ids = list(old_active_qs.values_list('id', flat=True))
+    old_vector_ids = list(
+        old_active_qs.exclude(vector_document_id='').values_list('vector_document_id', flat=True)
+    )
+    new_vector_ids = [
+        str(c.vector_document_id)
+        for c in new_chunks
+        if getattr(c, 'vector_document_id', '') and str(c.vector_document_id).strip()
+    ]
+
     new_ids = [c.id for c in new_chunks]
     with transaction.atomic():
         LessonContentChunk.objects.filter(lesson=lesson, is_active=True).update(is_active=False)
         LessonContentChunk.objects.filter(id__in=new_ids).update(is_active=True)
+
+    if old_vector_ids:
+        deleted = delete_documents(old_vector_ids)
+        if not deleted:
+            deleted_new = False
+            if new_vector_ids:
+                deleted_new = delete_documents(new_vector_ids)
+
+            rollback_applied = False
+            with transaction.atomic():
+                LessonContentChunk.objects.filter(id__in=new_ids).update(is_active=False)
+                if old_active_ids:
+                    LessonContentChunk.objects.filter(id__in=old_active_ids).update(is_active=True)
+                rollback_applied = True
+            raise LessonIngestionProcessingError(
+                'Failed to delete stale vector documents after activating new chunk set.',
+                error_payload={
+                    'stage': 'delete_stale_vectors',
+                    'lesson_id': str(lesson.id),
+                    'stale_vector_count': len(old_vector_ids),
+                    'rollback_applied': rollback_applied,
+                    'deleted_new_vector_set': deleted_new,
+                },
+            )
 
 
 def orchestrate_lesson_ingestion_job(job: LessonIngestionJob) -> None:
@@ -296,8 +332,24 @@ def orchestrate_lesson_ingestion_job(job: LessonIngestionJob) -> None:
     lesson = job.lesson
 
     if job.job_type == LessonIngestionJobType.DELETE_INDEX:
-        # Placeholder behavior for delete_index: just deactivate active chunks.
-        LessonContentChunk.objects.filter(lesson=lesson, is_active=True).update(is_active=False)
+        active_qs = LessonContentChunk.objects.filter(lesson=lesson, is_active=True)
+        active_vector_ids = list(
+            active_qs
+            .exclude(vector_document_id='')
+            .values_list('vector_document_id', flat=True)
+        )
+        if active_vector_ids:
+            deleted = delete_documents(active_vector_ids)
+            if not deleted:
+                raise LessonIngestionProcessingError(
+                    'Failed to delete vectors during delete_index job.',
+                    error_payload={
+                        'stage': 'delete_index_vectors',
+                        'lesson_id': str(lesson.id),
+                        'active_vector_count': len(active_vector_ids),
+                    },
+                )
+        active_qs.update(is_active=False)
         return
 
     if job.job_type not in (LessonIngestionJobType.INGEST, LessonIngestionJobType.REINGEST):

@@ -4,6 +4,20 @@ from apps.app_server.models.implemented.lms_lesson_progress_model import LessonP
 
 
 def get_module_state_map(user, course_id):
+    """
+    Tính trạng thái unlock/completed của từng module trong một course.
+
+    Args:
+        user: User cần tính trạng thái học tập.
+        course_id: ID của course cần kiểm tra.
+
+    Returns:
+        Dict dạng ``{module_id: {'is_unlocked': bool, 'is_completed': bool}}``.
+
+    Raises:
+        Exception: Có thể phát sinh từ truy vấn database nếu dữ liệu liên quan
+            không truy xuất được.
+    """
     modules = list(Module.objects.filter(course_id=course_id).order_by('order_index', 'created_at'))
     module_ids = [module.id for module in modules]
     if not module_ids:
@@ -46,6 +60,20 @@ def get_module_state_map(user, course_id):
 
 
 def get_lesson_status_map(user, module_id):
+    """
+    Tính trạng thái runtime của từng lesson trong một module.
+
+    Args:
+        user: User cần tính tiến độ.
+        module_id: ID của module cần lấy lesson status map.
+
+    Returns:
+        Dict dạng ``{lesson_id: 'completed'|'current'|'locked'}``.
+
+    Raises:
+        Exception: Có thể phát sinh từ truy vấn database hoặc dữ liệu module
+            không nhất quán.
+    """
     lessons = list(Lesson.objects.filter(module_id=module_id).order_by('order_index', 'created_at'))
     if not lessons:
         return {}

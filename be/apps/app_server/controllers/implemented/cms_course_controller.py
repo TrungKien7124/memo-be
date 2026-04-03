@@ -1,4 +1,6 @@
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Count
+from django.db.models import Q
 
 from apps.app_server.controllers.base.base_controller import CoreModelViewSet
 from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
@@ -17,8 +19,20 @@ class CourseViewSet(CoreModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role in ('teacher', 'admin'):
-            return Course.objects.all()
-        return Course.objects.filter(status=COURSE_STATUS_PUBLISHED)
+            return Course.objects.annotate(
+                lesson_count=Count(
+                    'modules__lessons',
+                    distinct=True,
+                    filter=Q(modules__is_deleted=False, modules__lessons__is_deleted=False),
+                ),
+            )
+        return Course.objects.filter(status=COURSE_STATUS_PUBLISHED).annotate(
+            lesson_count=Count(
+                'modules__lessons',
+                distinct=True,
+                filter=Q(modules__is_deleted=False, modules__lessons__is_deleted=False),
+            ),
+        )
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)

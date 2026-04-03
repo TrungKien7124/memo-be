@@ -18,7 +18,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.stdout.write('Seeding demo data...')
 
-        admin_user = self._create_user('admin@memo.dev', 'admin', 'Admin@123', 'admin')
+        self._ensure_demo_admin()
         teacher = self._create_user('teacher@memo.dev', 'teacher', 'Teacher@123', 'teacher')
         student = self._create_user('student@memo.dev', 'student', 'Student@123', 'student')
 
@@ -26,9 +26,30 @@ class Command(BaseCommand):
         self._create_flashcards(student)
 
         self.stdout.write(self.style.SUCCESS('Demo data seeded successfully!'))
-        self.stdout.write('  Admin:   admin@memo.dev / Admin@123')
+        self.stdout.write('  Admin:   admin@memo.dev / admin (username: admin)')
         self.stdout.write('  Teacher: teacher@memo.dev / Teacher@123')
         self.stdout.write('  Student: student@memo.dev / Student@123')
+
+    def _ensure_demo_admin(self):
+        email = 'admin@memo.dev'
+        username = 'admin'
+        password = 'admin'
+        user = User.objects.all_with_deleted().filter(email=email).first()
+        if user:
+            user.username = username
+            user.role = 'admin'
+            user.is_staff = True
+            user.is_superuser = True
+            user.is_active = True
+            if user.is_deleted:
+                user.is_deleted = False
+            user.set_password(password)
+            user.save()
+            UserProfile.objects.get_or_create(user=user, defaults={'display_name': 'Admin'})
+            UserXP.objects.get_or_create(user=user)
+            self.stdout.write(f'  Ensured demo admin (created earlier): {email} / {password}')
+            return user
+        return self._create_user(email, username, password, 'admin')
 
     def _create_user(self, email, username, password, role):
         if User.objects.all_with_deleted().filter(email=email).exists():

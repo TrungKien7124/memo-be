@@ -31,7 +31,7 @@ INSTALLED_APPS = [
     'apps.app_server',
     'apps.srs',
     'apps.ai',
-    'apps.lesson_ingestion',
+    'apps.les',
 ]
 
 MIDDLEWARE = [
@@ -192,6 +192,9 @@ AI_VECTOR_STORE = os.getenv('AI_VECTOR_STORE', 'chroma')
 AI_VECTOR_STORE_PATH = os.getenv('AI_VECTOR_STORE_PATH', '')
 AI_VECTOR_COLLECTION = os.getenv('AI_VECTOR_COLLECTION', 'memo_rag')
 AI_RAG_TOP_K = int(os.getenv('AI_RAG_TOP_K', '5'))
+AI_OLLAMA_EMBED_URL = os.getenv('AI_OLLAMA_EMBED_URL', 'http://host.docker.internal:11434')
+AI_OLLAMA_EMBED_MODEL = os.getenv('AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+AI_OLLAMA_EMBED_TIMEOUT = int(os.getenv('AI_OLLAMA_EMBED_TIMEOUT', '30'))
 
 # Custom user model
 AUTH_USER_MODEL = 'app_server.User'

@@ -44,6 +44,13 @@ class CardReviewLogCreateView(APIView):
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
+        if review_session.folder_id and srs_state.card.folder_id != review_session.folder_id:
+            return error_response(
+                request=request,
+                message='Card does not belong to the review session folder.',
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         log_data = process_review(srs_state, data['choice'])
 
         review_log = CardReviewLog.objects.create(

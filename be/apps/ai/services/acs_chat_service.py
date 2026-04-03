@@ -23,6 +23,20 @@ TOPIC_PROMPTS = {
 
 
 def get_system_prompt(topic=''):
+    """
+    Tạo system prompt cơ sở cho cuộc hội thoại AI.
+
+    Args:
+        topic: Chủ đề hội thoại hiện tại. Nếu có mapping trong
+            ``TOPIC_PROMPTS`` thì prompt sẽ được bổ sung ngữ cảnh kịch bản.
+
+    Returns:
+        Chuỗi prompt hoàn chỉnh để gửi cho LLM.
+
+    Raises:
+        Không chủ động raise exception. Hàm chỉ đọc dữ liệu cấu hình tĩnh
+        trong module.
+    """
     topic_addition = TOPIC_PROMPTS.get(topic, '')
     if topic_addition:
         return f"{SYSTEM_PROMPT}\n\nScenario: {topic_addition}"
@@ -30,7 +44,22 @@ def get_system_prompt(topic=''):
 
 
 def build_messages_for_api(conversation_messages, topic=''):
-    """Build the messages list for the LLM provider from conversation history."""
+    """
+    Chuẩn hóa lịch sử hội thoại về định dạng message list cho LLM provider.
+
+    Args:
+        conversation_messages: Queryset hoặc iterable các message đã lưu trong
+            hội thoại. Mỗi phần tử cần có ``role`` và ``content``.
+        topic: Chủ đề hội thoại để tạo system prompt phù hợp.
+
+    Returns:
+        Danh sách dict theo format ``{'role': ..., 'content': ...}``, trong đó
+        phần tử đầu tiên luôn là system prompt.
+
+    Raises:
+        AttributeError: Có thể phát sinh nếu phần tử trong
+            ``conversation_messages`` không có ``role`` hoặc ``content``.
+    """
     api_messages = [{'role': 'system', 'content': get_system_prompt(topic)}]
     for msg in conversation_messages:
         api_messages.append({'role': msg.role, 'content': msg.content})
@@ -39,9 +68,22 @@ def build_messages_for_api(conversation_messages, topic=''):
 
 def chat_with_ai(conversation, user_message_text, *, lesson=None):
     """
-    Send user message to AI and return AI response text.
-    Saves both user and AI messages to the conversation.
-    When RAG is enabled, relevant context is retrieved and injected automatically.
+    Gửi tin nhắn người dùng tới AI, lưu lịch sử hội thoại, rồi trả về message AI.
+
+    Args:
+        conversation: Bản ghi hội thoại hiện tại. Hàm sẽ lưu cả message của
+            user lẫn message phản hồi của assistant vào hội thoại này.
+        user_message_text: Nội dung text do người dùng gửi lên.
+        lesson: Lesson scope tùy chọn. Nếu có và RAG đang bật, hàm sẽ chỉ
+            retrieve context của lesson và active ingestion job hiện hành.
+
+    Returns:
+        Đối tượng ``Message`` của assistant vừa được tạo và lưu vào database.
+
+    Raises:
+        Exception: Có thể phát sinh từ provider, truy vấn database, hoặc
+            retrieval layer. Hàm này không tự catch các lỗi đó để controller
+            quyết định cách phản hồi API.
     """
     from apps.ai.models.acs_message_model import Message
 
@@ -59,7 +101,19 @@ def chat_with_ai(conversation, user_message_text, *, lesson=None):
     rag_enabled = getattr(settings, 'AI_RAG_ENABLED', False)
     if rag_enabled:
         if lesson is not None:
-            context_docs = retrieve_context(query=user_message_text, filters={'lesson_id': str(lesson.id)})
+            from apps.les.models import LessonContentChunk
+
+            active_ingestion_job_id = (
+                LessonContentChunk.objects.filter(lesson=lesson, is_active=True)
+                .values_list('ingestion_job_id', flat=True)
+                .first()
+            )
+
+            lesson_filters = {'lesson_id': str(lesson.id)}
+            if active_ingestion_job_id:
+                lesson_filters['ingestion_job_id'] = str(active_ingestion_job_id)
+
+            context_docs = retrieve_context(query=user_message_text, filters=lesson_filters)
         else:
             context_docs = retrieve_context(query=user_message_text)
         ai_response_text = llm.chat_completion_with_context(

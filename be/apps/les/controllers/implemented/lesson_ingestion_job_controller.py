@@ -2,8 +2,8 @@ from rest_framework.permissions import IsAuthenticated
 
 from apps.app_server.controllers.base.base_controller import CoreModelViewSet
 from apps.app_server.permissions.role_permission import IsTeacherOrAdmin
-from apps.lesson_ingestion.models import LessonIngestionJob
-from apps.lesson_ingestion.serializers.implemented.lesson_ingestion_job_serializer import (
+from apps.les.models import LessonIngestionJob
+from apps.les.serializers.implemented.lesson_ingestion_job_serializer import (
     LessonIngestionJobDetailSerializer,
     LessonIngestionJobListSerializer,
 )

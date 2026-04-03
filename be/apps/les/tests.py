@@ -15,7 +15,7 @@ from apps.app_server.models.implemented.cms_lesson_model import (
 )
 from apps.app_server.models.implemented.cms_module_model import Module
 from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
-from apps.lesson_ingestion.models import (
+from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
     LessonIngestionJobStatus,
@@ -23,8 +23,8 @@ from apps.lesson_ingestion.models import (
     LessonIngestionTriggerSource,
     LessonSourceDocument,
 )
-from apps.lesson_ingestion.services.lesson_ingestion_processing_service import LessonIngestionProcessingError
-from apps.lesson_ingestion.tasks import process_lesson_ingestion_job
+from apps.les.services.lesson_ingestion_processing_service import LessonIngestionProcessingError
+from apps.les.tasks import process_lesson_ingestion_job
 
 
 class LessonIngestionProcessingAPITestCase(TestCase):
@@ -94,6 +94,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             'lesson_type': lesson.lesson_type,
             'source_type': source_type,
             'chunk_index': 0,
+            'ingestion_job_id': str(job.id),
         }
 
         chunk = LessonContentChunk.objects.create(
@@ -107,7 +108,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             char_end=len(normalized_text),
             vector_document_id='seed-vector-id',
             embedding_provider='chroma',
-            embedding_model='default',
+            embedding_model='nomic-embed-text',
             metadata_json=metadata_json,
             is_active=True,
         )
@@ -122,7 +123,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             source_version='v1',
         )
 
-    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.index_documents')
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
     def test_text_ingestion_job_creates_source_docs_and_chunks_and_activates(self, mock_index_documents):
         def _fake_index_documents(documents, metadatas=None):
             return [f'vec-{i}' for i in range(len(documents))]
@@ -155,7 +156,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
         for chunk in chunks:
             self.assertTrue(chunk.vector_document_id)
 
-    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.get_video_transcript_from_url')
+    @patch('apps.les.services.lesson_ingestion_processing_service.get_video_transcript_from_url')
     def test_video_transcript_failure_marks_job_failed_and_keeps_previous_active_set(self, mock_transcript):
         lesson = self._create_video_lesson()
 
@@ -205,7 +206,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             0,
         )
 
-    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.index_documents')
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
     def test_reingest_swaps_active_chunk_set_after_success(self, mock_index_documents):
         def _fake_index_documents(documents, metadatas=None):
             return [f'new-vec-{i}' for i in range(len(documents))]
@@ -246,7 +247,7 @@ class LessonIngestionProcessingAPITestCase(TestCase):
         self.assertTrue(new_chunks.filter(is_active=True).exists())
         self.assertEqual(new_chunks.filter(is_active=True).count(), new_chunks.count())
 
-    @patch('apps.lesson_ingestion.services.lesson_ingestion_processing_service.index_documents')
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
     def test_indexing_failure_marks_job_failed_and_keeps_previous_active_set(self, mock_index_documents):
         lesson = self._create_text_lesson(title='Indexing Failure Lesson', content_markdown='Some text')
 
@@ -399,7 +400,7 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
             char_end=len(normalized_text),
             vector_document_id='seed-vector-id',
             embedding_provider='chroma',
-            embedding_model='default',
+            embedding_model='nomic-embed-text',
             metadata_json={
                 'lesson_id': str(lesson.id),
                 'module_id': str(lesson.module.id),
@@ -407,6 +408,7 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
                 'lesson_type': lesson.lesson_type,
                 'source_type': source_type,
                 'chunk_index': 0,
+                'ingestion_job_id': str(ingestion_job.id),
             },
             is_active=True,
         )
@@ -552,7 +554,7 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         self.assertEqual(payload['active_chunk_count'], 0)
         self.assertFalse(payload['has_active_chunk_set'])
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_manual_reindex_text_creates_reingest_pending_job(self, mock_delay):
         self.client.force_authenticate(user=self.teacher)
 
@@ -570,7 +572,7 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         mock_delay.assert_called_once_with(job.id)
         self.assertEqual(response.data['data']['id'], str(job.id))
 
-    @patch('apps.lesson_ingestion.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_manual_reindex_video_creates_reingest_pending_job(self, mock_delay):
         self.client.force_authenticate(user=self.teacher)
 

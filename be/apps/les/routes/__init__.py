@@ -1,10 +1,10 @@
 from django.urls import path
 
-from apps.lesson_ingestion.controllers.implemented.lesson_ingestion_lesson_controller import (
+from apps.les.controllers.implemented.lesson_ingestion_lesson_controller import (
     LessonIngestionLessonStatusView,
     LessonIngestionManualReindexView,
 )
-from apps.lesson_ingestion.controllers.implemented.lesson_ingestion_job_controller import LessonIngestionJobViewSet
+from apps.les.controllers.implemented.lesson_ingestion_job_controller import LessonIngestionJobViewSet
 from apps.app_server.routes.base.base_route import BaseRouter
 
 router = BaseRouter()

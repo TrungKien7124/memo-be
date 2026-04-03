@@ -6,18 +6,18 @@ from rest_framework.views import APIView
 
 from apps.app_server.models.implemented.cms_lesson_model import Lesson
 from apps.app_server.permissions.role_permission import IsTeacherOrAdmin
-from apps.lesson_ingestion.models import LessonIngestionJobType, LessonIngestionTriggerSource
-from apps.lesson_ingestion.serializers.implemented.lesson_ingestion_job_serializer import (
+from apps.les.models import LessonIngestionJobType, LessonIngestionTriggerSource
+from apps.les.serializers.implemented.lesson_ingestion_job_serializer import (
     LessonIngestionJobDetailSerializer,
 )
-from apps.lesson_ingestion.serializers.implemented.lesson_ingestion_lesson_status_serializer import (
+from apps.les.serializers.implemented.lesson_ingestion_lesson_status_serializer import (
     LessonIngestionLessonStatusSerializer,
 )
-from apps.lesson_ingestion.services.lesson_ingestion_scheduling_service import (
+from apps.les.services.lesson_ingestion_scheduling_service import (
     is_ingestion_supported_lesson,
     schedule_lesson_ingestion,
 )
-from apps.lesson_ingestion.services.lesson_ingestion_status_service import get_lesson_ingestion_status
+from apps.les.services.lesson_ingestion_status_service import get_lesson_ingestion_status
 
 
 class LessonIngestionLessonStatusView(APIView):

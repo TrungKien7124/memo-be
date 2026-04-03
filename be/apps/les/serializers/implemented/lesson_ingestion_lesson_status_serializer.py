@@ -29,5 +29,8 @@ class LessonIngestionLessonStatusSerializer(serializers.Serializer):
     active_chunk_count = serializers.IntegerField()
     has_active_chunk_set = serializers.BooleanField()
 
+    active_chunk_set_isolation_ready = serializers.BooleanField()
+    active_chunk_set_embedding_model_matches = serializers.BooleanField()
+
     last_indexed_at = serializers.DateTimeField(allow_null=True)
 

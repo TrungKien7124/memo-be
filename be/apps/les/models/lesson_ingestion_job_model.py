@@ -4,12 +4,16 @@ from apps.app_server.models.base.base_model import BaseModel
 
 
 class LessonIngestionJobType(models.TextChoices):
+    """Danh sách loại job ingestion hỗ trợ trong lesson RAG pipeline."""
+
     INGEST = 'ingest', 'Ingest'
     REINGEST = 'reingest', 'Reingest'
     DELETE_INDEX = 'delete_index', 'Delete Index'
 
 
 class LessonIngestionJobStatus(models.TextChoices):
+    """Danh sách trạng thái runtime của một ingestion job."""
+
     PENDING = 'pending', 'Pending'
     PROCESSING = 'processing', 'Processing'
     COMPLETED = 'completed', 'Completed'
@@ -18,6 +22,8 @@ class LessonIngestionJobStatus(models.TextChoices):
 
 
 class LessonIngestionTriggerSource(models.TextChoices):
+    """Nguồn sự kiện tạo ra ingestion job."""
+
     LESSON_CREATED = 'lesson_created', 'Lesson Created'
     LESSON_UPDATED = 'lesson_updated', 'Lesson Updated'
     MANUAL_REINDEX = 'manual_reindex', 'Manual Reindex'
@@ -25,6 +31,14 @@ class LessonIngestionTriggerSource(models.TextChoices):
 
 
 class LessonIngestionJob(BaseModel):
+    """
+    Lưu một lần chạy ingestion cho lesson để phục vụ audit và retry.
+
+    Mục đích:
+        Theo dõi vòng đời của mỗi lần ingest/reingest/delete-index, bao gồm
+        trạng thái, thời gian chạy và payload lỗi nếu có.
+    """
+
     lesson = models.ForeignKey(
         'app_server.Lesson',
         on_delete=models.CASCADE,
@@ -52,4 +66,13 @@ class LessonIngestionJob(BaseModel):
         ]
 
     def __str__(self):
+        """
+        Trả về chuỗi mô tả ngắn của ingestion job.
+
+        Returns:
+            Chuỗi chứa lesson title, job type và status hiện tại.
+
+        Raises:
+            Không chủ động raise exception.
+        """
         return f'{self.lesson.title} [{self.job_type}:{self.status}]'

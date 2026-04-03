@@ -10,6 +10,13 @@ class ReviewSession(BaseModel):
         on_delete=models.CASCADE,
         related_name='review_sessions',
     )
+    folder = models.ForeignKey(
+        'app_server.Folder',
+        on_delete=models.SET_NULL,
+        related_name='review_sessions',
+        null=True,
+        blank=True,
+    )
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 

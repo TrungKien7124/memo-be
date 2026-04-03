@@ -11,7 +11,7 @@ from apps.ai.models.acs_conversation_model import Conversation
 from apps.ai.services.acs_chat_service import chat_with_ai
 from apps.app_server.services.lms_unlock_service import get_lesson_status_map
 from apps.app_server.models.implemented.cms_lesson_model import Lesson
-from apps.lesson_ingestion.services.lesson_ingestion_status_service import get_lesson_ingestion_status
+from apps.les.services.lesson_ingestion_status_service import get_lesson_ingestion_status
 
 
 class ChatView(APIView):
@@ -115,7 +115,13 @@ class ChatView(APIView):
                 elif not rag_enabled:
                     lesson_context_status = 'index_failed'
                 elif ingestion_status['has_active_chunk_set']:
-                    lesson_context_status = 'ready'
+                    if (
+                        ingestion_status.get('active_chunk_set_isolation_ready', False)
+                        and ingestion_status.get('active_chunk_set_embedding_model_matches', False)
+                    ):
+                        lesson_context_status = 'ready'
+                    else:
+                        lesson_context_status = 'index_pending'
                 elif ingestion_status['latest_failed_job'] is not None:
                     lesson_context_status = 'index_failed'
                 else:

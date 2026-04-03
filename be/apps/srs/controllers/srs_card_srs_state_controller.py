@@ -1,4 +1,7 @@
+import uuid
+
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 
 from apps.app_server.controllers.base.base_controller import CoreModelViewSet
 from apps.srs.models.srs_card_srs_state_model import CardSRSState
@@ -12,8 +15,18 @@ class CardSRSStateViewSet(CoreModelViewSet):
     http_method_names = ['get', 'head', 'options']
 
     def get_queryset(self):
-        return (
+        folder_id = self.request.query_params.get('folder')
+        if folder_id:
+            try:
+                uuid.UUID(str(folder_id))
+            except (ValueError, TypeError):
+                raise ValidationError({'folder': 'Invalid folder id.'})
+
+        qs = (
             CardSRSState.objects
             .filter(card__user=self.request.user, card__is_deleted=False)
             .select_related('card')
         )
+        if folder_id:
+            qs = qs.filter(card__folder_id=folder_id)
+        return qs

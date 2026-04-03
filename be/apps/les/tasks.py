@@ -1,8 +1,8 @@
 from celery import Task
 
 from memo_backend.celery import app
-from apps.lesson_ingestion.models import LessonIngestionJob, LessonIngestionJobStatus
-from apps.lesson_ingestion.services.lesson_ingestion_processing_service import (
+from apps.les.models import LessonIngestionJob, LessonIngestionJobStatus
+from apps.les.services.lesson_ingestion_processing_service import (
     LessonIngestionProcessingError,
     mark_job_completed,
     mark_job_failed,

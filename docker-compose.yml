@@ -53,9 +53,12 @@ services:
       - "${WEB_PORT:-8000}:8000"
     volumes:
       - static_files:/app/be/staticfiles
+      - rag_data:/app/data/chroma
     environment:
       RUN_MIGRATIONS: "true"
       COLLECT_STATIC: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -70,9 +73,13 @@ services:
     <<: *common-env
     command: celery -A memo_backend worker -l info --concurrency=2
     working_dir: /app/be
+    volumes:
+      - rag_data:/app/data/chroma
     environment:
       RUN_MIGRATIONS: "false"
       COLLECT_STATIC: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -90,6 +97,8 @@ services:
     environment:
       RUN_MIGRATIONS: "false"
       COLLECT_STATIC: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -104,11 +113,15 @@ services:
     <<: *common-env
     command: daphne -b 0.0.0.0 -p 8001 memo_backend.asgi:application
     working_dir: /app/be
+    volumes:
+      - rag_data:/app/data/chroma
     ports:
       - "${WS_PORT:-8001}:8001"
     environment:
       RUN_MIGRATIONS: "false"
       COLLECT_STATIC: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
@@ -121,4 +134,6 @@ volumes:
   redis_data:
     driver: local
   static_files:
+    driver: local
+  rag_data:
     driver: local
