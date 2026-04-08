@@ -72,8 +72,8 @@ class SpeakingConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _process_chat(self, user_text):
-        from apps.ai.models.sps_speaking_session_model import SpeakingSession
-        from apps.ai.services.acs_chat_service import chat_with_ai
+        from apps.ai.models.speaking_session_model import SpeakingSession
+        from apps.ai.services.chat_service import chat_with_ai
 
         session = SpeakingSession.objects.select_related('conversation').get(
             id=self.session_id, user=self.user,

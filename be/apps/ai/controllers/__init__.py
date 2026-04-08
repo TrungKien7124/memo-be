@@ -1,5 +1,5 @@
-from apps.ai.controllers.acs_chat_controller import ChatView, ChatHistoryView, ConversationDetailView
-from apps.ai.controllers.sps_speaking_controller import (
+from apps.ai.controllers.chat_controller import ChatView, ChatHistoryView, ConversationDetailView
+from apps.ai.controllers.speaking_controller import (
     SpeakingSessionCreateView,
     SpeakingTurnView,
     SpeakingSessionEndView,

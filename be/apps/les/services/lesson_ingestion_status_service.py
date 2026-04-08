@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.conf import settings
 
-from apps.app_server.models.implemented.cms_lesson_model import Lesson
+from apps.app_server.models.lesson_model import Lesson
 from apps.les.models import LessonContentChunk, LessonIngestionJob, LessonIngestionJobStatus
 from apps.les.services.lesson_ingestion_scheduling_service import is_ingestion_supported_lesson
 

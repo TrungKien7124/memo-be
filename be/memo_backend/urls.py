@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
 
-from apps.app_server.controllers.implemented.health_controller import HealthCheckView
+from apps.app_server.controllers.health_controller import HealthCheckView
 
 urlpatterns = [
     path('admin/', admin.site.urls),

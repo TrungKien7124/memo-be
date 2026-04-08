@@ -135,6 +135,17 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Dev-friendly CORS fallback: allow localhost origins on any port.
+# This prevents broad preflight failures when FE dev server port changes
+# (e.g. 5173 -> 5174) without requiring .env edits every time.
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https?://localhost(:\d+)?$",
+    r"^https?://127\.0\.0\.1(:\d+)?$",
+]
+
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+
 # Channels – use Redis when available, fallback to in-memory for simple dev
 REDIS_URL = os.getenv('REDIS_URL', '')
 if REDIS_URL:

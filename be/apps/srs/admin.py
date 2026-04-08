@@ -1,8 +1,8 @@
 from django.contrib import admin
 
-from apps.srs.models.srs_card_srs_state_model import CardSRSState
-from apps.srs.models.rse_review_session_model import ReviewSession
-from apps.srs.models.rse_card_review_log_model import CardReviewLog
+from apps.srs.models.card_repetition_state_model import CardSRSState
+from apps.srs.models.review_session_model import ReviewSession
+from apps.srs.models.card_review_log_model import CardReviewLog
 
 
 @admin.register(CardSRSState)

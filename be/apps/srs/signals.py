@@ -1,8 +1,8 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from apps.app_server.models.implemented.nfs_flashcard_model import Flashcard
-from apps.srs.models.srs_card_srs_state_model import CardSRSState
+from apps.app_server.models.flashcard_model import Flashcard
+from apps.srs.models.card_repetition_state_model import CardSRSState
 
 
 @receiver(post_save, sender=Flashcard)

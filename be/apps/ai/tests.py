@@ -7,16 +7,16 @@ from rest_framework.test import APITestCase
 
 from unittest.mock import MagicMock, patch
 
-from apps.ai.models.acs_conversation_model import Conversation
-from apps.ai.models.acs_message_model import Message, ROLE_ASSISTANT, ROLE_USER
-from apps.app_server.models.implemented.cms_lesson_model import (
+from apps.ai.models.conversation_model import Conversation
+from apps.ai.models.conversation_message_model import Message, ROLE_ASSISTANT, ROLE_USER
+from apps.app_server.models.lesson_model import (
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     Lesson,
 )
-from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
-from apps.app_server.models.implemented.cms_module_model import Module
-from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
+from apps.app_server.models.course_model import Course, COURSE_STATUS_PUBLISHED
+from apps.app_server.models.module_model import Module
+from apps.app_server.models.user_model import ROLE_STUDENT, ROLE_TEACHER, User
 from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
@@ -174,13 +174,13 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         fake_llm.chat_completion_with_context.return_value = 'lesson grounded reply'
 
         with (
-            patch('apps.ai.services.acs_chat_service.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.chat_service.get_llm_provider', return_value=fake_llm),
             patch('apps.ai.services.providers.get_llm_provider', return_value=fake_llm),
-            patch('apps.ai.services.acs_chat_service.retrieve_context', side_effect=retrieve_mock) as mock_retrieve,
+            patch('apps.ai.services.chat_service.retrieve_context', side_effect=retrieve_mock) as mock_retrieve,
         ):
-            import apps.ai.services.acs_chat_service as acs_chat_service
-            self.assertIs(acs_chat_service.get_llm_provider(), fake_llm)
-            from apps.ai.services.acs_chat_service import chat_with_ai
+            import apps.ai.services.chat_service as chat_service
+            self.assertIs(chat_service.get_llm_provider(), fake_llm)
+            from apps.ai.services.chat_service import chat_with_ai
             conv_direct = Conversation.objects.create(user=self.teacher, topic='')
             call_count_before_direct = fake_llm.chat_completion_with_context.call_count
             ai_direct = chat_with_ai(conv_direct, 'direct lesson question', lesson=lesson)
@@ -188,7 +188,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
             self.assertGreater(fake_llm.chat_completion_with_context.call_count, call_count_before_direct)
             call_count_before_request = fake_llm.chat_completion_with_context.call_count
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {
                     'lesson_id': str(lesson.id),
                     'message': 'Explain lesson',
@@ -227,7 +227,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
     def test_lesson_aware_request_without_message_fails(self):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
         response = self.client.post(
-            '/api/acs/chat/',
+            '/api/chat/',
             {'lesson_id': str(lesson.id)},
             format='json',
         )
@@ -236,7 +236,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
 
     def test_lesson_aware_request_missing_lesson_id_fails_when_lesson_mode_is_requested(self):
         response = self.client.post(
-            '/api/acs/chat/',
+            '/api/chat/',
             {'lesson_id': '', 'message': 'Hi'},
             format='json',
         )
@@ -244,13 +244,13 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         self.assertIn('message', response.data)
 
     @override_settings(AI_RAG_ENABLED=True)
-    @patch('apps.ai.services.acs_chat_service.get_llm_provider')
+    @patch('apps.ai.services.chat_service.get_llm_provider')
     def test_lesson_supported_but_no_active_chunks_returns_index_pending(self, mock_get_llm_provider):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
 
-        with patch('apps.ai.services.acs_chat_service.retrieve_context') as mock_retrieve:
+        with patch('apps.ai.services.chat_service.retrieve_context') as mock_retrieve:
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson.id), 'message': 'Explain'},
                 format='json',
             )
@@ -270,12 +270,12 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         fake_llm.chat_completion_with_context.return_value = 'lesson grounded reply'
 
         with (
-            patch('apps.ai.services.acs_chat_service.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.chat_service.get_llm_provider', return_value=fake_llm),
             patch('apps.ai.services.providers.get_llm_provider', return_value=fake_llm),
-            patch('apps.ai.services.acs_chat_service.retrieve_context', return_value=['ctx']) as mock_retrieve,
+            patch('apps.ai.services.chat_service.retrieve_context', return_value=['ctx']) as mock_retrieve,
         ):
             first_response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson.id), 'message': 'Explain'},
                 format='json',
             )
@@ -296,7 +296,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
             self._create_ingestion_job_and_active_chunks(lesson=lesson)
 
             second_response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {
                     'lesson_id': str(lesson.id),
                     'conversation_id': conversation_id,
@@ -316,14 +316,14 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
             self.assertEqual(conversation.messages.count(), 2)
 
     @override_settings(AI_RAG_ENABLED=True)
-    @patch('apps.ai.services.acs_chat_service.get_llm_provider')
+    @patch('apps.ai.services.chat_service.get_llm_provider')
     def test_lesson_supported_but_latest_job_failed_returns_index_failed(self, mock_get_llm_provider):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
         self._create_failed_ingestion_job_without_active_chunks(lesson=lesson)
 
-        with patch('apps.ai.services.acs_chat_service.retrieve_context') as mock_retrieve:
+        with patch('apps.ai.services.chat_service.retrieve_context') as mock_retrieve:
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson.id), 'message': 'Explain'},
                 format='json',
             )
@@ -336,13 +336,13 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         mock_retrieve.assert_not_called()
 
     @override_settings(AI_RAG_ENABLED=True)
-    @patch('apps.ai.services.acs_chat_service.get_llm_provider')
+    @patch('apps.ai.services.chat_service.get_llm_provider')
     def test_lesson_unsupported_quiz_returns_unsupported_lesson(self, mock_get_llm_provider):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_QUIZ)
 
-        with patch('apps.ai.services.acs_chat_service.retrieve_context') as mock_retrieve:
+        with patch('apps.ai.services.chat_service.retrieve_context') as mock_retrieve:
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson.id), 'message': 'Explain'},
                 format='json',
             )
@@ -356,7 +356,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
 
     def test_unknown_lesson_id_returns_not_found(self):
         response = self.client.post(
-            '/api/acs/chat/',
+            '/api/chat/',
             {'lesson_id': str(uuid4()), 'message': 'Explain'},
             format='json',
         )
@@ -364,14 +364,14 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         self.assertIn('message', response.data)
 
     @override_settings(AI_RAG_ENABLED=False)
-    @patch('apps.ai.services.acs_chat_service.get_llm_provider')
+    @patch('apps.ai.services.chat_service.get_llm_provider')
     def test_lesson_ready_but_rag_disabled_returns_index_failed(self, mock_get_llm_provider):
         _, _, lesson = _create_course_module_lesson(teacher=self.teacher, lesson_type=LESSON_TYPE_TEXT, content_markdown='hello')
         self._create_ingestion_job_and_active_chunks(lesson=lesson)
 
-        with patch('apps.ai.services.acs_chat_service.retrieve_context') as mock_retrieve:
+        with patch('apps.ai.services.chat_service.retrieve_context') as mock_retrieve:
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson.id), 'message': 'Explain'},
                 format='json',
             )
@@ -393,7 +393,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         _, _, _lesson_a, lesson_b = _create_course_module_two_text_lessons(teacher=self.teacher)
         self.client.force_authenticate(user=student)
         response = self.client.post(
-            '/api/acs/chat/',
+            '/api/chat/',
             {'lesson_id': str(lesson_b.id), 'message': 'Explain'},
             format='json',
         )
@@ -410,12 +410,12 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         fake_llm.chat_completion_with_context.return_value = 'reply a'
 
         with (
-            patch('apps.ai.services.acs_chat_service.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.chat_service.get_llm_provider', return_value=fake_llm),
             patch('apps.ai.services.providers.get_llm_provider', return_value=fake_llm),
-            patch('apps.ai.services.acs_chat_service.retrieve_context', return_value=['ctx']),
+            patch('apps.ai.services.chat_service.retrieve_context', return_value=['ctx']),
         ):
             first = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {'lesson_id': str(lesson_a.id), 'message': 'First'},
                 format='json',
             )
@@ -428,7 +428,7 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         llm_calls_before = fake_llm.chat_completion_with_context.call_count
 
         second = self.client.post(
-            '/api/acs/chat/',
+            '/api/chat/',
             {
                 'conversation_id': conversation_id,
                 'lesson_id': str(lesson_b.id),
@@ -457,12 +457,12 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         fake_llm.chat_completion_with_context.return_value = 'should not run'
 
         with (
-            patch('apps.ai.services.acs_chat_service.get_llm_provider', return_value=fake_llm),
+            patch('apps.ai.services.chat_service.get_llm_provider', return_value=fake_llm),
             patch('apps.ai.services.providers.get_llm_provider', return_value=fake_llm),
-            patch('apps.ai.services.acs_chat_service.retrieve_context') as mock_retrieve,
+            patch('apps.ai.services.chat_service.retrieve_context') as mock_retrieve,
         ):
             response = self.client.post(
-                '/api/acs/chat/',
+                '/api/chat/',
                 {
                     'conversation_id': str(generic_conv.id),
                     'lesson_id': str(lesson.id),

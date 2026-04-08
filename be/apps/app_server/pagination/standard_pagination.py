@@ -1,5 +1,6 @@
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.response import Response
+
+from apps.app_server.responses.api_responses import paginated_success_response
 
 
 class StandardPagination(PageNumberPagination):
@@ -8,13 +9,14 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 100
 
     def get_paginated_response(self, data):
-        return Response({
-            'data': data,
-            'meta': {
-                'count': self.page.paginator.count,
-                'page': self.page.number,
-                'page_size': self.get_page_size(self.request),
-                'next': self.get_next_link(),
-                'previous': self.get_previous_link(),
-            }
-        })
+        count = self.page.paginator.count
+        current = self.page.number
+        size = self.get_page_size(self.request) or 1
+        total_pages = (count + size - 1) // size if count > 0 else 0
+        pageinfo = {
+            'count': count,
+            'current': current,
+            'total_pages': total_pages,
+            'size': size,
+        }
+        return paginated_success_response(data, pageinfo)

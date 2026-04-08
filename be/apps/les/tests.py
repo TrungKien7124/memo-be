@@ -6,15 +6,15 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.ai.services.rag import retriever
-from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
-from apps.app_server.models.implemented.cms_lesson_model import (
+from apps.app_server.models.course_model import Course, COURSE_STATUS_PUBLISHED
+from apps.app_server.models.lesson_model import (
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     LESSON_TYPE_VIDEO,
     Lesson,
 )
-from apps.app_server.models.implemented.cms_module_model import Module
-from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
+from apps.app_server.models.module_model import Module
+from apps.app_server.models.user_model import ROLE_STUDENT, ROLE_TEACHER, User
 from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
@@ -206,8 +206,14 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             0,
         )
 
+    @patch(
+        'apps.les.services.lesson_ingestion_processing_service.delete_documents',
+        return_value=True,
+    )
     @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
-    def test_reingest_swaps_active_chunk_set_after_success(self, mock_index_documents):
+    def test_reingest_swaps_active_chunk_set_after_success(
+        self, mock_index_documents, _mock_delete_documents
+    ):
         def _fake_index_documents(documents, metadatas=None):
             return [f'new-vec-{i}' for i in range(len(documents))]
 
@@ -441,12 +447,13 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
 
         response = self.client.get('/api/lesson-ingestion/jobs/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', response.data)
-        self.assertIn('meta', response.data)
-        self.assertIsInstance(response.data['data'], list)
-        self.assertGreaterEqual(len(response.data['data']), 2)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertIn('records', response.data['data'])
+        self.assertIn('pageinfo', response.data['data'])
+        self.assertIsInstance(response.data['data']['records'], list)
+        self.assertGreaterEqual(len(response.data['data']['records']), 2)
 
-        item = response.data['data'][0]
+        item = response.data['data']['records'][0]
         for field in (
             'id',
             'lesson_id',
@@ -492,8 +499,9 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
 
         response = self.client.get(f'/api/lesson-ingestion/jobs/{uuid4()}/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data['status'], 'warning')
+        self.assertEqual(response.data['code'], 604)
         self.assertIn('message', response.data)
-        self.assertIn('error', response.data)
 
     def test_lesson_status_supported_with_active_chunk_set(self):
         self.client.force_authenticate(user=self.teacher)
@@ -593,8 +601,9 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         lesson = self._create_quiz_lesson(title='Manual Reindex Quiz')
         response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/reindex/')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
         self.assertIn('message', response.data)
-        self.assertIn('error', response.data)
+        self.assertIn('errors', response.data['data'])
 
     def test_permissions_require_teacher_admin(self):
         # Unauthenticated -> 401

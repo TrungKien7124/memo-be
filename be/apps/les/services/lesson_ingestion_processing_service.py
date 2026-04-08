@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai.services.rag.retriever import delete_documents, index_documents
-from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
+from apps.app_server.models.lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
 from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,

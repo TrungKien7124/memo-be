@@ -5,14 +5,14 @@ from rest_framework.test import APITestCase
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, User
-from apps.app_server.models.implemented.nfs_flashcard_model import Flashcard
-from apps.app_server.models.implemented.nfs_folder_model import Folder
-from apps.app_server.services.gms_xp_service import XP_AMOUNTS
-from apps.srs.models.rse_review_session_model import ReviewSession
-from apps.srs.models.rse_card_review_log_model import CardReviewLog
-from apps.srs.models.srs_card_srs_state_model import CardSRSState
-from apps.srs.services.srs_review_service import calculate_srs_update
+from apps.app_server.models.user_model import ROLE_STUDENT, User
+from apps.app_server.models.flashcard_model import Flashcard
+from apps.app_server.models.folder_model import Folder
+from apps.app_server.services.xp_service import XP_AMOUNTS
+from apps.srs.models.review_session_model import ReviewSession
+from apps.srs.models.card_review_log_model import CardReviewLog
+from apps.srs.models.card_repetition_state_model import CardSRSState
+from apps.srs.services.spaced_repetition_service import calculate_srs_update
 
 
 class SRSAlgorithmTest(TestCase):
@@ -88,7 +88,7 @@ class SRSContractAPITestCase(APITestCase):
         card_srs_state.save(update_fields=['stage', 'interval_days', 'due_date', 'updated_at'])
 
     def test_review_session_create_uses_data_envelope(self):
-        response = self.client.post('/api/rse/review-sessions/', {}, format='json')
+        response = self.client.post('/api/review-sessions/', {}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('data', response.data)
@@ -96,16 +96,17 @@ class SRSContractAPITestCase(APITestCase):
 
     def test_review_session_list_uses_data_meta_envelope(self):
         ReviewSession.objects.create(user=self.user)
-        response = self.client.get('/api/rse/review-sessions/')
+        response = self.client.get('/api/review-sessions/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', response.data)
-        self.assertIn('meta', response.data)
-        self.assertIsInstance(response.data['data'], list)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertIn('records', response.data['data'])
+        self.assertIn('pageinfo', response.data['data'])
+        self.assertIsInstance(response.data['data']['records'], list)
 
     def test_review_session_patch_uses_data_envelope(self):
         session = ReviewSession.objects.create(user=self.user)
-        response = self.client.patch(f'/api/rse/review-sessions/{session.id}/', {}, format='json')
+        response = self.client.patch(f'/api/review-sessions/{session.id}/', {}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
@@ -114,7 +115,7 @@ class SRSContractAPITestCase(APITestCase):
     def test_card_review_create_uses_data_envelope(self):
         session = ReviewSession.objects.create(user=self.user)
         response = self.client.post(
-            '/api/rse/card-review-logs/',
+            '/api/card-review-logs/',
             {
                 'session': str(session.id),
                 'card': str(self.flashcard.id),
@@ -128,18 +129,19 @@ class SRSContractAPITestCase(APITestCase):
         self.assertEqual(response.data['data']['choice'], 'GOOD')
 
     def test_due_card_list_uses_data_meta_envelope(self):
-        response = self.client.get('/api/srs/card-srs/', {'due_date__lte': timezone.now().date().isoformat()})
+        response = self.client.get('/api/card-repetition-states/', {'due_date__lte': timezone.now().date().isoformat()})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', response.data)
-        self.assertIn('meta', response.data)
-        self.assertIsInstance(response.data['data'], list)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertIn('records', response.data['data'])
+        self.assertIn('pageinfo', response.data['data'])
+        self.assertIsInstance(response.data['data']['records'], list)
 
     def test_due_card_list_includes_real_flashcard_display_data(self):
-        response = self.client.get('/api/srs/card-srs/', {'due_date__lte': timezone.now().date().isoformat()})
+        response = self.client.get('/api/card-repetition-states/', {'due_date__lte': timezone.now().date().isoformat()})
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        payload = response.data['data']
+        payload = response.data['data']['records']
         self.assertGreaterEqual(len(payload), 1)
         first = payload[0]
 
@@ -162,14 +164,14 @@ class SRSContractAPITestCase(APITestCase):
         non_due_srs_state.due_date = tomorrow
         non_due_srs_state.save(update_fields=['due_date', 'updated_at'])
 
-        response = self.client.get('/api/srs/card-srs/', {'due_date__lte': timezone.now().date().isoformat()})
+        response = self.client.get('/api/card-repetition-states/', {'due_date__lte': timezone.now().date().isoformat()})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        card_ids = {item['card'] for item in response.data['data']}
+        card_ids = {str(item['card']) for item in response.data['data']['records']}
         self.assertIn(str(due_card_srs_state.card.id), card_ids)
         self.assertNotIn(str(non_due_flashcard.id), card_ids)
 
-    def test_due_card_list_is_user-scoped(self):
+    def test_due_card_list_is_user_scoped(self):
         other_user = User.objects.create_user(
             email='other-srs-user@example.com',
             username='other-srs-user',
@@ -187,17 +189,17 @@ class SRSContractAPITestCase(APITestCase):
         other_srs_state.due_date = timezone.now().date()
         other_srs_state.save(update_fields=['due_date', 'updated_at'])
 
-        response = self.client.get('/api/srs/card-srs/', {'due_date__lte': timezone.now().date().isoformat()})
+        response = self.client.get('/api/card-repetition-states/', {'due_date__lte': timezone.now().date().isoformat()})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        returned_card_ids = {item['card'] for item in response.data['data']}
+        returned_card_ids = {str(item['card']) for item in response.data['data']['records']}
         self.assertIn(str(self.flashcard.id), returned_card_ids)
         self.assertNotIn(str(other_flashcard.id), returned_card_ids)
 
     def test_folder_crud_contract_and_ownership(self):
         # Create
         response = self.client.post(
-            '/api/nfs/folders/',
+            '/api/folders/',
             {'name': 'New Folder'},
             format='json',
         )
@@ -209,15 +211,15 @@ class SRSContractAPITestCase(APITestCase):
         folder_id = response.data['data']['id']
 
         # List (canonical list envelope)
-        list_response = self.client.get('/api/nfs/folders/')
+        list_response = self.client.get('/api/folders/')
         self.assertEqual(list_response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', list_response.data)
-        self.assertIn('meta', list_response.data)
-        self.assertIsInstance(list_response.data['data'], list)
+        self.assertIn('records', list_response.data['data'])
+        self.assertIn('pageinfo', list_response.data['data'])
+        self.assertIsInstance(list_response.data['data']['records'], list)
 
         # Patch
         patch_response = self.client.patch(
-            f'/api/nfs/folders/{folder_id}/',
+            f'/api/folders/{folder_id}/',
             {'name': 'Updated Folder'},
             format='json',
         )
@@ -226,8 +228,9 @@ class SRSContractAPITestCase(APITestCase):
         self.assertEqual(patch_response.data['data']['name'], 'Updated Folder')
 
         # Delete (soft delete)
-        delete_response = self.client.delete(f'/api/nfs/folders/{folder_id}/')
-        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        delete_response = self.client.delete(f'/api/folders/{folder_id}/')
+        self.assertEqual(delete_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(delete_response.data['status'], 'success')
 
         folder = Folder.all_objects.get(id=folder_id)
         self.assertTrue(folder.is_deleted)
@@ -244,7 +247,7 @@ class SRSContractAPITestCase(APITestCase):
 
         # Recreate a fresh folder for deletion attempt.
         target_folder = Folder.objects.create(user=self.user, name='Owner Folder')
-        forbidden_response = other_client.delete(f'/api/nfs/folders/{target_folder.id}/')
+        forbidden_response = other_client.delete(f'/api/folders/{target_folder.id}/')
         self.assertEqual(forbidden_response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_flashcard_crud_contract_and_folder_scoping(self):
@@ -252,7 +255,7 @@ class SRSContractAPITestCase(APITestCase):
 
         # Create
         response = self.client.post(
-            '/api/nfs/flashcards/',
+            '/api/flashcards/',
             {
                 'folder': str(other_folder.id),
                 'front_text': 'front',
@@ -262,20 +265,20 @@ class SRSContractAPITestCase(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('data', response.data)
-        self.assertEqual(response.data['data']['folder'], str(other_folder.id))
+        self.assertEqual(str(response.data['data']['folder']), str(other_folder.id))
 
         flashcard_id = response.data['data']['id']
 
         # List by folder
-        list_response = self.client.get('/api/nfs/flashcards/', {'folder': str(other_folder.id)})
+        list_response = self.client.get('/api/flashcards/', {'folder': str(other_folder.id)})
         self.assertEqual(list_response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', list_response.data)
-        self.assertIn('meta', list_response.data)
-        self.assertTrue(all(item['folder'] == str(other_folder.id) for item in list_response.data['data']))
+        self.assertIn('records', list_response.data['data'])
+        records = list_response.data['data']['records']
+        self.assertTrue(all(str(item['folder']) == str(other_folder.id) for item in records))
 
         # Patch
         patch_response = self.client.patch(
-            f'/api/nfs/flashcards/{flashcard_id}/',
+            f'/api/flashcards/{flashcard_id}/',
             {'front_text': 'front-updated'},
             format='json',
         )
@@ -283,8 +286,9 @@ class SRSContractAPITestCase(APITestCase):
         self.assertEqual(patch_response.data['data']['front_text'], 'front-updated')
 
         # Delete (soft delete)
-        delete_response = self.client.delete(f'/api/nfs/flashcards/{flashcard_id}/')
-        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        delete_response = self.client.delete(f'/api/flashcards/{flashcard_id}/')
+        self.assertEqual(delete_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(delete_response.data['status'], 'success')
 
         flashcard = Flashcard.all_objects.get(id=flashcard_id)
         self.assertTrue(flashcard.is_deleted)
@@ -303,7 +307,7 @@ class SRSContractAPITestCase(APITestCase):
             front_text='owner',
             back_text='owner-back',
         )
-        forbidden_response = self.client.delete(f'/api/nfs/flashcards/{target_flashcard.id}/')
+        forbidden_response = self.client.delete(f'/api/flashcards/{target_flashcard.id}/')
         self.assertEqual(forbidden_response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_review_session_summary_fields_are_real_and_non_fake(self):
@@ -311,7 +315,7 @@ class SRSContractAPITestCase(APITestCase):
 
         # Review once.
         self.client.post(
-            '/api/rse/card-review-logs/',
+            '/api/card-review-logs/',
             {
                 'session': str(session.id),
                 'card': str(self.flashcard.id),
@@ -320,10 +324,9 @@ class SRSContractAPITestCase(APITestCase):
             format='json',
         )
 
-        response = self.client.get('/api/rse/review-sessions/')
+        response = self.client.get('/api/review-sessions/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('meta', response.data)
-        sessions_payload = response.data['data']
+        sessions_payload = response.data['data']['records']
 
         session_items = [item for item in sessions_payload if str(item['id']) == str(session.id)]
         self.assertEqual(len(session_items), 1)
@@ -335,12 +338,12 @@ class SRSContractAPITestCase(APITestCase):
         self.assertEqual(item['xp_earned'], XP_AMOUNTS['review'])
 
         # XP summary endpoint must reflect review-awarded XP.
-        xp_response = self.client.get('/api/gms/xp/')
+        xp_response = self.client.get('/api/xp/')
         self.assertEqual(xp_response.status_code, status.HTTP_200_OK)
         self.assertEqual(xp_response.data['data']['total_xp'], XP_AMOUNTS['review'])
 
     def test_review_session_create_returns_canonical_envelope_and_initial_summary(self):
-        response = self.client.post('/api/rse/review-sessions/', {}, format='json')
+        response = self.client.post('/api/review-sessions/', {}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('data', response.data)
@@ -356,7 +359,7 @@ class SRSContractAPITestCase(APITestCase):
         session = ReviewSession.objects.create(user=self.user)
 
         response = self.client.post(
-            '/api/rse/card-review-logs/',
+            '/api/card-review-logs/',
             {
                 'session': str(session.id),
                 'card': str(self.flashcard.id),
@@ -366,13 +369,14 @@ class SRSContractAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('choice', response.data.get('error', response.data))
+        self.assertEqual(response.data['code'], 603)
+        self.assertIn('choice', response.data['data']['errors'])
 
     def test_review_session_end_session_sets_ended_at_and_returns_envelope(self):
         session = ReviewSession.objects.create(user=self.user)
 
         response = self.client.patch(
-            f'/api/rse/review-sessions/{session.id}/',
+            f'/api/review-sessions/{session.id}/',
             {},
             format='json',
         )
@@ -386,7 +390,7 @@ class SRSContractAPITestCase(APITestCase):
         srs_state_before = CardSRSState.objects.select_related('card').get(card=self.flashcard)
 
         response = self.client.post(
-            '/api/rse/card-review-logs/',
+            '/api/card-review-logs/',
             {
                 'session': str(session.id),
                 'card': str(self.flashcard.id),
@@ -429,7 +433,7 @@ class SRSContractAPITestCase(APITestCase):
         ))
 
         response = self.client.post(
-            '/api/rse/card-review-logs/',
+            '/api/card-review-logs/',
             {
                 'session': str(other_user_session.id),
                 'card': str(self.flashcard.id),

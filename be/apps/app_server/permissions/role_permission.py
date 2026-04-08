@@ -1,6 +1,6 @@
 from rest_framework.permissions import BasePermission
 
-from apps.app_server.models.implemented.iam_user_model import ROLE_ADMIN, ROLE_TEACHER
+from apps.app_server.models.user_model import ROLE_ADMIN, ROLE_TEACHER
 
 
 class IsAdmin(BasePermission):

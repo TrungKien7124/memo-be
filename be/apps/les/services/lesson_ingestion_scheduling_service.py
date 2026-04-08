@@ -1,7 +1,7 @@
 import hashlib
 import json
 
-from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
+from apps.app_server.models.lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
 from apps.les.models import (
     LessonIngestionJob,
     LessonIngestionJobStatus,

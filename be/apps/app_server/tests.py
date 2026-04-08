@@ -7,20 +7,20 @@ from unittest.mock import patch
 
 from django.utils import timezone
 
-from apps.app_server.models.implemented.cms_course_model import Course, COURSE_STATUS_PUBLISHED
-from apps.app_server.models.implemented.cms_lesson_model import (
+from apps.app_server.models.course_model import Course, COURSE_STATUS_PUBLISHED
+from apps.app_server.models.lesson_model import (
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     LESSON_TYPE_VIDEO,
     Lesson,
 )
-from apps.app_server.models.implemented.cms_module_model import Module
-from apps.app_server.models.implemented.iam_user_model import ROLE_STUDENT, ROLE_TEACHER, User
-from apps.app_server.models.implemented.lms_lesson_progress_model import LessonProgress
-from apps.app_server.models.implemented.gms_xp_transaction_model import XPTransaction
-from apps.app_server.models.implemented.gms_user_xp_model import UserXP
-from apps.app_server.services.gms_xp_service import XP_AMOUNTS
-from apps.app_server.serializers.implemented.iam_auth_serializer import get_tokens_for_user
+from apps.app_server.models.module_model import Module
+from apps.app_server.models.user_model import ROLE_STUDENT, ROLE_TEACHER, User
+from apps.app_server.models.lesson_progress_model import LessonProgress
+from apps.app_server.models.xp_transaction_model import XPTransaction
+from apps.app_server.models.user_xp_model import UserXP
+from apps.app_server.services.xp_service import XP_AMOUNTS
+from apps.app_server.serializers.auth_serializer import get_tokens_for_user
 from apps.les.models import (
     LessonIngestionJob,
     LessonIngestionJobStatus,
@@ -136,27 +136,31 @@ class CoreContractAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'warning')
+        self.assertEqual(response.data['code'], 603)
         self.assertIn('message', response.data)
-        self.assertIn('old_data', response.data)
-        self.assertIn('error', response.data)
+        self.assertIn('old_data', response.data['data'])
+        self.assertIn('errors', response.data['data'])
 
     def test_courses_list_uses_data_meta_envelope(self):
-        response = self.client.get('/api/cms/courses/')
+        response = self.client.get('/api/courses/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('data', response.data)
-        self.assertIn('meta', response.data)
-        self.assertIsInstance(response.data['data'], list)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertEqual(response.data['code'], 200)
+        self.assertIn('records', response.data['data'])
+        self.assertIn('pageinfo', response.data['data'])
+        self.assertIsInstance(response.data['data']['records'], list)
 
     def test_course_detail_uses_data_envelope(self):
-        response = self.client.get(f'/api/cms/courses/{self.course.id}/')
+        response = self.client.get(f'/api/courses/{self.course.id}/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
         self.assertEqual(str(response.data['data']['id']), str(self.course.id))
 
     def test_lesson_detail_uses_data_envelope(self):
-        response = self.client.get(f'/api/cms/lessons/{self.video_lesson.id}/')
+        response = self.client.get(f'/api/lessons/{self.video_lesson.id}/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
@@ -164,7 +168,7 @@ class CoreContractAPITestCase(APITestCase):
 
     def test_video_progress_update_uses_data_envelope(self):
         response = self.client.post(
-            '/api/lms/lesson-progress/',
+            '/api/lesson-progress/',
             {'lesson': str(self.video_lesson.id), 'watched_seconds': 10},
             format='json',
         )
@@ -176,7 +180,7 @@ class CoreContractAPITestCase(APITestCase):
 
     def test_text_progress_update_uses_data_envelope(self):
         response = self.client.post(
-            '/api/lms/lesson-progress/',
+            '/api/lesson-progress/',
             {'lesson': str(self.text_lesson.id), 'completed': True},
             format='json',
         )
@@ -188,7 +192,7 @@ class CoreContractAPITestCase(APITestCase):
 
     def test_quiz_submission_nests_runtime_under_data(self):
         response = self.client.post(
-            '/api/lms/lesson-progress/',
+            '/api/lesson-progress/',
             {
                 'lesson': str(self.quiz_lesson.id),
                 'question_index': 0,
@@ -206,7 +210,7 @@ class CoreContractAPITestCase(APITestCase):
 
     def test_quiz_wrong_answer_decrements_hearts(self):
         response = self.client.post(
-            '/api/lms/lesson-progress/',
+            '/api/lesson-progress/',
             {
                 'lesson': str(self.quiz_lesson.id),
                 'question_index': 0,
@@ -231,7 +235,7 @@ class CoreContractAPITestCase(APITestCase):
         )
 
         response = self.client.post(
-            '/api/lms/lesson-progress/',
+            '/api/lesson-progress/',
             {
                 'lesson': str(self.quiz_lesson.id),
                 'question_index': 0,
@@ -248,7 +252,7 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(runtime['correct_count'], 0)
 
     def test_xp_endpoint_uses_data_envelope(self):
-        response = self.client.get('/api/gms/xp/')
+        response = self.client.get('/api/xp/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
@@ -282,7 +286,7 @@ class CoreContractAPITestCase(APITestCase):
         user_xp.monthly_xp = 0
         user_xp.save(update_fields=['total_xp', 'weekly_xp', 'monthly_xp', 'updated_at'])
 
-        response = self.client.get('/api/gms/xp/')
+        response = self.client.get('/api/xp/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         payload = response.data['data']
 
@@ -318,7 +322,7 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(payload['monthly_xp'], expected_monthly)
 
     def test_lesson_completion_awards_xp_idempotently(self):
-        from apps.app_server.models.implemented.cms_lesson_model import LESSON_TYPE_VIDEO
+        from apps.app_server.models.lesson_model import LESSON_TYPE_VIDEO
 
         self.assertEqual(self.video_lesson.lesson_type, LESSON_TYPE_VIDEO)
 
@@ -326,14 +330,14 @@ class CoreContractAPITestCase(APITestCase):
         start_total = user_xp.total_xp
 
         payload = {'lesson': str(self.video_lesson.id), 'watched_seconds': self.video_lesson.min_watch_time}
-        first = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        first = self.client.post('/api/lesson-progress/', payload, format='json')
         self.assertIn('data', first.data)
         self.assertTrue(first.data['data']['completed'])
 
         user_xp.refresh_from_db()
         self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['lesson'])
 
-        second = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        second = self.client.post('/api/lesson-progress/', payload, format='json')
         self.assertIn('data', second.data)
         self.assertTrue(second.data['data']['completed'])
 
@@ -349,14 +353,14 @@ class CoreContractAPITestCase(APITestCase):
             'question_index': 0,
             'selected_answer': 0,
         }
-        first = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        first = self.client.post('/api/lesson-progress/', payload, format='json')
         self.assertIn('data', first.data)
         self.assertTrue(first.data['data']['quiz_runtime']['completed'])
 
         user_xp.refresh_from_db()
         self.assertEqual(user_xp.total_xp, start_total + XP_AMOUNTS['quiz'])
 
-        second = self.client.post('/api/lms/lesson-progress/', payload, format='json')
+        second = self.client.post('/api/lesson-progress/', payload, format='json')
         self.assertIn('data', second.data)
         self.assertTrue(second.data['data']['quiz_runtime']['completed'])
 
@@ -384,7 +388,7 @@ class CoreContractAPITestCase(APITestCase):
             monthly_xp=0,
         )
 
-        response = self.client.get('/api/gms/leaderboard/?period=total')
+        response = self.client.get('/api/leaderboard/?period=total')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
         self.assertTrue(len(response.data['data']) >= 1)
@@ -417,7 +421,7 @@ class CoreContractAPITestCase(APITestCase):
             created_at=timezone.now() if week_start <= today_date <= week_end else timezone.now(),
         )
 
-        response = self.client.get('/api/gms/leaderboard/?period=weekly')
+        response = self.client.get('/api/leaderboard/?period=weekly')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
         self.assertTrue(len(response.data['data']) >= 1)
@@ -454,15 +458,17 @@ class CoreContractAPITestCase(APITestCase):
             created_at=timezone.now() if month_start <= today_date <= month_end else timezone.now(),
         )
 
-        response = self.client.get('/api/gms/leaderboard/?period=monthly')
+        response = self.client.get('/api/leaderboard/?period=monthly')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('data', response.data)
         self.assertTrue(len(response.data['data']) >= 1)
         self.assertEqual(response.data['data'][0]['xp'], 25)
 
     def test_leaderboard_invalid_period_rejected(self):
-        response = self.client.get('/api/gms/leaderboard/?period=invalid')
+        response = self.client.get('/api/leaderboard/?period=invalid')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'warning')
+        self.assertEqual(response.data['code'], 604)
 
 
 class LessonIngestionSchedulingAPITestCase(APITestCase):
@@ -542,7 +548,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_text_lesson_enqueues_ingest(self, mock_delay):
         payload = self._build_text_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', payload, format='json')
+        response = self.client.post('/api/lessons/', payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         job = LessonIngestionJob.objects.get()
@@ -554,7 +560,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_video_lesson_enqueues_ingest(self, mock_delay):
         payload = self._build_video_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', payload, format='json')
+        response = self.client.post('/api/lessons/', payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         job = LessonIngestionJob.objects.get()
@@ -566,7 +572,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_create_quiz_lesson_does_not_enqueue_job(self, mock_delay):
         payload = self._build_quiz_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', payload, format='json')
+        response = self.client.post('/api/lessons/', payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         self.assertEqual(LessonIngestionJob.objects.count(), 0)
@@ -575,14 +581,14 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_non_ingestion_fields_does_not_reingest(self, mock_delay):
         create_payload = self._build_text_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', create_payload, format='json')
+        response = self.client.post('/api/lessons/', create_payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         lesson_id = response.data['data']['id']
 
         LessonIngestionJob.objects.all().delete()
         mock_delay.reset_mock()
 
-        response = self.client.patch(f'/api/cms/lessons/{lesson_id}/', {'order_index': 2}, format='json')
+        response = self.client.patch(f'/api/lessons/{lesson_id}/', {'order_index': 2}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         self.assertEqual(LessonIngestionJob.objects.count(), 0)
@@ -591,7 +597,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_ingestion_relevant_fields_enqueues_reingest(self, mock_delay):
         create_payload = self._build_video_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', create_payload, format='json')
+        response = self.client.post('/api/lessons/', create_payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         lesson_id = response.data['data']['id']
 
@@ -599,7 +605,7 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         mock_delay.reset_mock()
 
         response = self.client.patch(
-            f'/api/cms/lessons/{lesson_id}/',
+            f'/api/lessons/{lesson_id}/',
             {'title': 'New Video Lesson Title'},
             format='json',
         )
@@ -614,14 +620,14 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_supported_to_quiz_enqueues_delete_index(self, mock_delay):
         create_payload = self._build_text_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', create_payload, format='json')
+        response = self.client.post('/api/lessons/', create_payload, format='json')
         lesson_id = response.data['data']['id']
 
         LessonIngestionJob.objects.all().delete()
         mock_delay.reset_mock()
 
         response = self.client.patch(
-            f'/api/cms/lessons/{lesson_id}/',
+            f'/api/lessons/{lesson_id}/',
             {
                 'lesson_type': LESSON_TYPE_QUIZ,
                 'quiz_questions': [
@@ -645,14 +651,14 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_quiz_to_text_enqueues_ingest(self, mock_delay):
         create_payload = self._build_quiz_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', create_payload, format='json')
+        response = self.client.post('/api/lessons/', create_payload, format='json')
         lesson_id = response.data['data']['id']
 
         LessonIngestionJob.objects.all().delete()
         mock_delay.reset_mock()
 
         response = self.client.patch(
-            f'/api/cms/lessons/{lesson_id}/',
+            f'/api/lessons/{lesson_id}/',
             {
                 'lesson_type': LESSON_TYPE_TEXT,
                 'content_markdown': 'Hello reingested text',
@@ -670,14 +676,17 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_delete_supported_lesson_enqueues_delete_index(self, mock_delay):
         create_payload = self._build_video_lesson_payload()
-        response = self.client.post('/api/cms/lessons/', create_payload, format='json')
+        response = self.client.post('/api/lessons/', create_payload, format='json')
         lesson_id = response.data['data']['id']
 
         LessonIngestionJob.objects.all().delete()
         mock_delay.reset_mock()
 
-        response = self.client.delete(f'/api/cms/lessons/{lesson_id}/')
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        response = self.client.delete(f'/api/lessons/{lesson_id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertEqual(response.data['code'], 200)
+        self.assertIsNone(response.data['data'])
 
         job = LessonIngestionJob.objects.get()
         self.assertEqual(job.job_type, LessonIngestionJobType.DELETE_INDEX)

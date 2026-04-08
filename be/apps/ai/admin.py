@@ -1,8 +1,8 @@
 from django.contrib import admin
 
-from apps.ai.models.acs_conversation_model import Conversation
-from apps.ai.models.acs_message_model import Message
-from apps.ai.models.sps_speaking_session_model import SpeakingSession
+from apps.ai.models.conversation_model import Conversation
+from apps.ai.models.conversation_message_model import Message
+from apps.ai.models.speaking_session_model import SpeakingSession
 
 
 @admin.register(Conversation)

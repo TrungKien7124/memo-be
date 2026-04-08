@@ -1,6 +1,6 @@
 from django.db import models
 
-from apps.app_server.models.base.base_model import BaseModel
+from apps.app_server.models.base_model import BaseModel
 
 
 class LessonContentChunk(BaseModel):
