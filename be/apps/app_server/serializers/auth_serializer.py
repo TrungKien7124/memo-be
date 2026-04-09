@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -46,21 +47,23 @@ class RegisterSerializer(serializers.Serializer):
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.CharField()
+    identifier = serializers.CharField(required=False)
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):
         from django.contrib.auth import authenticate
 
-        login_input = attrs['email'].strip()
+        login_input = (attrs.get('identifier') or attrs.get('email') or '').strip()
         password = attrs['password']
 
         if not login_input:
             raise serializers.ValidationError({'email': 'Email or username is required.'})
 
-        if '@' in login_input:
-            user = User.objects.filter(email=login_input.lower(), is_deleted=False).first()
-        else:
-            user = User.objects.filter(username__iexact=login_input, is_deleted=False).first()
+        normalized_identifier = login_input.lower()
+        user = User.objects.filter(
+            Q(email__iexact=normalized_identifier) | Q(username__iexact=normalized_identifier),
+            is_deleted=False,
+        ).first()
 
         if not user:
             raise serializers.ValidationError('Invalid email or password.')

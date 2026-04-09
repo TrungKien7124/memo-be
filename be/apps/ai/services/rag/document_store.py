@@ -1,6 +1,11 @@
 import logging
 from abc import ABC, abstractmethod
+from uuid import UUID
+
 import requests
+from django.conf import settings
+from django.db.models import Q
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -254,3 +259,104 @@ class ChromaDocumentStore(BaseDocumentStore):
             Exception: Các lỗi từ Chroma khi xóa document thất bại.
         """
         self.collection.delete(ids=document_ids)
+
+
+class PgVectorDocumentStore(BaseDocumentStore):
+    """
+    Lesson-scoped vector storage on ``LessonContentChunk.embedding`` using pgvector + Gemini embeddings.
+    """
+
+    def __init__(self, embedding_client=None):
+        from apps.ai.services.rag.gemini_embedding_client import get_gemini_embedding_client
+
+        self._embed = embedding_client or get_gemini_embedding_client()
+
+    def add_documents(self, documents, metadatas=None):
+        from apps.les.models.lesson_content_chunk_model import LessonContentChunk
+
+        if not documents:
+            return []
+        if metadatas is None or len(metadatas) != len(documents):
+            raise ValueError('metadatas must be provided and aligned with documents for pgvector indexing.')
+
+        chunk_ids: list[str] = []
+        for meta in metadatas:
+            chunk_id = (meta or {}).get('chunk_id')
+            if not chunk_id:
+                raise ValueError('Each metadata row must include chunk_id for pgvector indexing.')
+            chunk_ids.append(str(chunk_id))
+
+        title_prefix = None
+        first_meta = metadatas[0] or {}
+        raw_prefix = first_meta.get('embedding_title_prefix')
+        if raw_prefix:
+            title_prefix = str(raw_prefix).strip() or None
+
+        vectors = self._embed.embed_documents(documents, title_prefix=title_prefix)
+        if len(vectors) != len(documents):
+            raise RuntimeError('Embedding provider returned an unexpected number of vectors.')
+
+        embedding_provider = 'gemini'
+        embedding_model = getattr(settings, 'AI_GEMINI_EMBED_MODEL', 'gemini-embedding-001')
+
+        returned_ids: list[str] = []
+        for chunk_id_str, vector, _meta in zip(chunk_ids, vectors, metadatas):
+            chunk_pk = UUID(str(chunk_id_str))
+            updated = LessonContentChunk.objects.filter(pk=chunk_pk).update(
+                embedding=vector,
+                vector_document_id=chunk_id_str,
+                embedding_provider=embedding_provider,
+                embedding_model=embedding_model,
+                updated_at=timezone.now(),
+            )
+            if not updated:
+                raise ValueError(f'LessonContentChunk not found for chunk_id={chunk_id_str}')
+            returned_ids.append(chunk_id_str)
+
+        return returned_ids
+
+    def search(self, query, top_k=5, filters=None):
+        from pgvector.django import CosineDistance
+
+        from apps.les.models.lesson_content_chunk_model import LessonContentChunk
+
+        query_vector = self._embed.embed_query(query)
+        qs = LessonContentChunk.objects.filter(is_active=True, embedding__isnull=False)
+
+        filt = filters or {}
+        if filt.get('lesson_id'):
+            qs = qs.filter(lesson_id=UUID(str(filt['lesson_id'])))
+        if filt.get('ingestion_job_id'):
+            qs = qs.filter(ingestion_job_id=UUID(str(filt['ingestion_job_id'])))
+
+        qs = qs.annotate(distance=CosineDistance('embedding', query_vector)).order_by('distance')[:top_k]
+
+        hits = []
+        for row in qs:
+            hits.append({
+                'content': row.content,
+                'metadata': row.metadata_json or {},
+                'score': float(row.distance),
+            })
+        return hits
+
+    def delete_documents(self, document_ids):
+        from apps.les.models.lesson_content_chunk_model import LessonContentChunk
+
+        if not document_ids:
+            return
+
+        uuid_candidates = []
+        for raw_id in document_ids:
+            try:
+                uuid_candidates.append(UUID(str(raw_id)))
+            except ValueError:
+                continue
+
+        str_ids = [str(i) for i in document_ids]
+        q = Q(id__in=uuid_candidates) | Q(vector_document_id__in=str_ids)
+        LessonContentChunk.objects.filter(q).update(
+            embedding=None,
+            vector_document_id='',
+            updated_at=timezone.now(),
+        )

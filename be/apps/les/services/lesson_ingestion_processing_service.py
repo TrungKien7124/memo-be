@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai.services.rag.retriever import delete_documents, index_documents
-from apps.app_server.models.lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
+from apps.app_server.models.lesson_model import LESSON_TYPE_LESSON
 from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
@@ -71,38 +71,33 @@ def extract_source_document_for_lesson(lesson, job: LessonIngestionJob) -> Lesso
     lesson_type = getattr(lesson, 'lesson_type', None)
     lesson_id = getattr(lesson, 'id', None)
 
-    if lesson_type == LESSON_TYPE_TEXT:
+    if lesson_type == LESSON_TYPE_LESSON:
         raw_text = getattr(lesson, 'content_markdown', '') or ''
         normalized_text = normalize_lesson_text(raw_text)
-        if not normalized_text:
-            raise LessonIngestionProcessingError(
-                'Text extraction produced empty content.',
-                error_payload={'lesson_id': str(lesson_id), 'source_type': 'text_markdown'},
+        if normalized_text:
+            checksum = hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()
+            return LessonSourceDocument.objects.create(
+                lesson=lesson,
+                ingestion_job=job,
+                source_type='lesson_summary_markdown',
+                source_locator=f'lesson:{lesson_id}:content_markdown',
+                raw_text=raw_text,
+                normalized_text=normalized_text,
+                language_code='en',
+                checksum=checksum,
+                metadata_json={
+                    'lesson_id': str(lesson_id),
+                    'job_type': job.job_type,
+                    'trigger_source': job.trigger_source,
+                },
             )
 
-        checksum = hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()
-        return LessonSourceDocument.objects.create(
-            lesson=lesson,
-            ingestion_job=job,
-            source_type='text_markdown',
-            source_locator=f'lesson:{lesson_id}:content_markdown',
-            raw_text=raw_text,
-            normalized_text=normalized_text,
-            language_code='en',
-            checksum=checksum,
-            metadata_json={
-                'lesson_id': str(lesson_id),
-                'job_type': job.job_type,
-                'trigger_source': job.trigger_source,
-            },
-        )
-
-    if lesson_type == LESSON_TYPE_VIDEO:
+        # Transitional fallback for legacy rows: use transcript when summary is empty.
         video_url = getattr(lesson, 'video_url', '') or ''
         if not video_url:
             raise LessonIngestionProcessingError(
-                'Video lesson has an empty video_url.',
-                error_payload={'lesson_id': str(lesson_id), 'source_type': 'video_url_transcript'},
+                'Lesson extraction produced empty content and missing fallback video_url.',
+                error_payload={'lesson_id': str(lesson_id), 'source_type': 'lesson_summary_markdown'},
             )
 
         transcript = get_video_transcript_from_url(video_url)
@@ -211,8 +206,8 @@ def build_chunk_metadata(lesson, source_type: str, chunk_index: int) -> dict[str
 
 
 def persist_chunk_set(lesson, job: LessonIngestionJob, source_document: LessonSourceDocument, chunks) -> list[LessonContentChunk]:
-    embedding_provider = 'ollama'
-    embedding_model = getattr(settings, 'AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+    embedding_provider = 'gemini'
+    embedding_model = getattr(settings, 'AI_GEMINI_EMBED_MODEL', 'gemini-embedding-001')
 
     persisted: list[LessonContentChunk] = []
     for idx, chunk in enumerate(chunks):
@@ -233,6 +228,7 @@ def persist_chunk_set(lesson, job: LessonIngestionJob, source_document: LessonSo
             metadata_json={
                 **metadata,
                 'ingestion_job_id': str(job.id),
+                'embedding_title_prefix': lesson.title,
             },
             is_active=False,
         )
@@ -246,7 +242,7 @@ def index_chunks_and_persist_vector_ids(chunks: list[LessonContentChunk]) -> Non
         raise LessonIngestionProcessingError('No chunks were created to index.')
 
     documents = [c.content for c in chunks]
-    metadatas = [c.metadata_json for c in chunks]
+    metadatas = [{**(c.metadata_json or {}), 'chunk_id': str(c.id)} for c in chunks]
 
     vector_document_ids = index_documents(documents, metadatas=metadatas)
     if not vector_document_ids:
@@ -257,7 +253,7 @@ def index_chunks_and_persist_vector_ids(chunks: list[LessonContentChunk]) -> Non
                 error_payload={
                     'stage': 'index_documents',
                     'rag_enabled': rag_enabled,
-                    'vector_store': getattr(settings, 'AI_VECTOR_STORE', 'chroma'),
+                    'vector_store': getattr(settings, 'AI_VECTOR_STORE', 'pgvector'),
                     'chunks': len(chunks),
                     'returned_ids': 0,
                 },

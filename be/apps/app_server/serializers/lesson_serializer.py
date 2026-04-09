@@ -3,8 +3,7 @@ from rest_framework import serializers
 from apps.app_server.serializers.base_serializer import CoreModelSerializer
 from apps.app_server.models.lesson_model import (
     Lesson,
-    LESSON_TYPE_VIDEO,
-    LESSON_TYPE_TEXT,
+    LESSON_TYPE_LESSON,
     LESSON_TYPE_QUIZ,
 )
 
@@ -19,26 +18,35 @@ class LessonSerializer(CoreModelSerializer):
     def validate(self, attrs):
         instance = getattr(self, 'instance', None)
 
-        lesson_type = attrs.get('lesson_type', getattr(instance, 'lesson_type', LESSON_TYPE_VIDEO))
+        lesson_type = attrs.get('lesson_type', getattr(instance, 'lesson_type', LESSON_TYPE_LESSON))
         video_url = attrs.get('video_url', getattr(instance, 'video_url', ''))
+        video_file = attrs.get('video_file', getattr(instance, 'video_file', None))
         content_markdown = attrs.get('content_markdown', getattr(instance, 'content_markdown', ''))
         quiz_questions = attrs.get('quiz_questions', getattr(instance, 'quiz_questions', []))
         is_final = attrs.get('is_final', getattr(instance, 'is_final', False))
         module = attrs.get('module', getattr(instance, 'module', None))
+        is_create = instance is None
 
-        if lesson_type == LESSON_TYPE_VIDEO:
-            if not video_url:
-                raise serializers.ValidationError({'video_url': ['Video URL is required for video lessons.']})
-            return attrs
-
-        if lesson_type == LESSON_TYPE_TEXT:
-            if not content_markdown:
-                raise serializers.ValidationError({'content_markdown': ['Content is required for text lessons.']})
+        if lesson_type == LESSON_TYPE_LESSON:
+            should_validate_video = is_create or any(
+                field in attrs for field in ('lesson_type', 'video_url', 'video_file')
+            )
+            should_validate_summary = is_create or any(
+                field in attrs for field in ('lesson_type', 'content_markdown')
+            )
+            if should_validate_video and not (str(video_url or '').strip() or video_file):
+                raise serializers.ValidationError({'video_url': ['Video source is required (video_url or video_file).']})
+            if should_validate_summary and not str(content_markdown or '').strip():
+                raise serializers.ValidationError({'content_markdown': ['Summary text is required for lessons.']})
+            if quiz_questions:
+                raise serializers.ValidationError({'quiz_questions': ['Quiz questions are only supported for quiz lessons.']})
             if is_final:
                 raise serializers.ValidationError({'is_final': ['Final lesson must be quiz type.']})
             return attrs
 
         if lesson_type == LESSON_TYPE_QUIZ:
+            if video_file:
+                raise serializers.ValidationError({'video_file': ['Video file is not allowed for quiz lessons.']})
             self._validate_quiz_questions(quiz_questions)
             if is_final and module:
                 queryset = Lesson.objects.filter(module=module, is_final=True)
@@ -75,7 +83,11 @@ class LessonSerializer(CoreModelSerializer):
         model = Lesson
         fields = [
             'id', 'module', 'title', 'lesson_type', 'video_url',
+            'video_file', 'transcript_text', 'transcript_status', 'transcript_error', 'transcript_language',
             'content_markdown', 'quiz_questions', 'is_final',
             'min_watch_time', 'order_index', 'status', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'transcript_text', 'transcript_status', 'transcript_error']
+        extra_kwargs = {
+            'video_file': {'write_only': True, 'required': False},
+        }

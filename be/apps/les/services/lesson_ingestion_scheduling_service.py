@@ -1,7 +1,7 @@
 import hashlib
 import json
 
-from apps.app_server.models.lesson_model import LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO
+from apps.app_server.models.lesson_model import LESSON_TYPE_LESSON
 from apps.les.models import (
     LessonIngestionJob,
     LessonIngestionJobStatus,
@@ -18,7 +18,7 @@ def _get_value(obj, key, default=None):
 
 def is_ingestion_supported_lesson(lesson) -> bool:
     lesson_type = _get_value(lesson, 'lesson_type')
-    return lesson_type in (LESSON_TYPE_TEXT, LESSON_TYPE_VIDEO)
+    return lesson_type == LESSON_TYPE_LESSON
 
 
 def extract_ingestion_relevant_fields(lesson):

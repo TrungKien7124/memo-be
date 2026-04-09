@@ -6,11 +6,14 @@ from apps.app_server.models.course_model import Course
 
 class CourseSerializer(CoreModelSerializer):
     lesson_count = serializers.IntegerField(read_only=True, default=0)
+    is_enrolled = serializers.BooleanField(read_only=True, default=False)
+    enrolled_at = serializers.DateTimeField(read_only=True, allow_null=True, required=False)
 
     class Meta:
         model = Course
         fields = [
             'id', 'title', 'description', 'thumbnail_url',
             'status', 'created_by', 'created_at', 'updated_at', 'lesson_count',
+            'is_enrolled', 'enrolled_at',
         ]
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']

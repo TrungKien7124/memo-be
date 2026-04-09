@@ -1,12 +1,15 @@
 from uuid import uuid4
 
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from unittest.mock import MagicMock, patch
 
+from apps.ai.services.rag import retriever as rag_retriever
+from apps.ai.services.rag.document_store import PgVectorDocumentStore
+from apps.ai.services.rag.retriever import retrieve_context
 from apps.ai.models.conversation_model import Conversation
 from apps.ai.models.conversation_message_model import Message, ROLE_ASSISTANT, ROLE_USER
 from apps.app_server.models.lesson_model import (
@@ -127,8 +130,8 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
             char_start=0,
             char_end=len('normalized seed'),
             vector_document_id='vec-seed',
-            embedding_provider='chroma',
-            embedding_model='nomic-embed-text',
+            embedding_provider='gemini',
+            embedding_model='gemini-embedding-001',
             metadata_json={
                 'lesson_id': str(lesson.id),
                 'module_id': str(lesson.module.id),
@@ -478,4 +481,189 @@ class LessonAwareChatbotS3_1Tests(APITestCase):
         self.assertEqual(generic_conv.messages.count(), 2)
         fake_llm.chat_completion_with_context.assert_not_called()
         mock_retrieve.assert_not_called()
+
+
+def _gemini_sized_vector(fill: float) -> list[float]:
+    return [fill] * 768
+
+
+class GeminiEmbeddingClientConfigTests(TestCase):
+    def test_client_uses_http_timeout_from_settings_ms(self):
+        from google.genai import types as genai_types
+        from apps.ai.services.rag import gemini_embedding_client as gec
+
+        fake_client = MagicMock()
+        with patch('google.genai.Client', return_value=fake_client) as mock_client_ctor:
+            embedding_client = gec.GeminiEmbeddingClient(api_key='fake-key', timeout_seconds=42.7)
+            embedding_client._get_client()
+            embedding_client._get_client()
+        mock_client_ctor.assert_called_once()
+        call_kw = mock_client_ctor.call_args.kwargs
+        self.assertEqual(call_kw.get('api_key'), 'fake-key')
+        http_opts = call_kw.get('http_options')
+        self.assertIsInstance(http_opts, genai_types.HttpOptions)
+        self.assertEqual(http_opts.timeout, 42700)
+
+
+class PgVectorDocumentStoreTests(TestCase):
+    def setUp(self):
+        rag_retriever.reset_document_store_cache()
+
+    def tearDown(self):
+        rag_retriever.reset_document_store_cache()
+
+    def _create_chunk(self, *, lesson_type=LESSON_TYPE_TEXT, content_markdown='chunk source text'):
+        suffix = str(uuid4())[:8]
+        teacher = User.objects.create_user(
+            email=f'pgvec-teacher-{suffix}@example.com',
+            username=f'pgvec-teacher-{suffix}',
+            password='Password@123',
+            role=ROLE_TEACHER,
+        )
+        course = Course.objects.create(
+            title=f'PgVec Course {suffix}',
+            description='c',
+            status=COURSE_STATUS_PUBLISHED,
+            created_by=teacher,
+        )
+        module = Module.objects.create(course=course, title='M1', order_index=1)
+        lesson = Lesson.objects.create(
+            module=module,
+            title='Lesson title',
+            lesson_type=lesson_type,
+            content_markdown=content_markdown,
+            video_url='',
+            quiz_questions=[],
+            is_final=False,
+            min_watch_time=10,
+            order_index=1,
+        )
+        job = LessonIngestionJob.objects.create(
+            lesson=lesson,
+            job_type=LessonIngestionJobType.INGEST,
+            trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
+            status=LessonIngestionJobStatus.COMPLETED,
+            source_version='v1',
+            started_at=timezone.now(),
+            finished_at=timezone.now(),
+        )
+        source_document = LessonSourceDocument.objects.create(
+            lesson=lesson,
+            ingestion_job=job,
+            source_type='text_markdown',
+            source_locator='loc',
+            raw_text=content_markdown,
+            normalized_text=content_markdown,
+            language_code='en',
+            checksum='chk',
+            metadata_json={},
+        )
+        chunk = LessonContentChunk.objects.create(
+            lesson=lesson,
+            ingestion_job=job,
+            source_document=source_document,
+            chunk_index=0,
+            content=content_markdown,
+            token_estimate=4,
+            char_start=0,
+            char_end=len(content_markdown),
+            vector_document_id='',
+            embedding_provider='gemini',
+            embedding_model='gemini-embedding-001',
+            metadata_json={
+                'lesson_id': str(lesson.id),
+                'ingestion_job_id': str(job.id),
+                'embedding_title_prefix': lesson.title,
+            },
+            is_active=True,
+        )
+        return lesson, job, chunk
+
+    def test_add_documents_requires_chunk_id_metadata(self):
+        lesson, _job, _chunk = self._create_chunk()
+        mock_embed = MagicMock()
+        store = PgVectorDocumentStore(embedding_client=mock_embed)
+        with self.assertRaises(ValueError):
+            store.add_documents(['a'], metadatas=[{'lesson_id': str(lesson.id)}])
+
+    def test_index_search_delete_roundtrip(self):
+        lesson, job, chunk = self._create_chunk(content_markdown='unique retrieval phrase')
+        mock_embed = MagicMock()
+        mock_embed.embed_documents.return_value = [_gemini_sized_vector(0.25)]
+        mock_embed.embed_query.return_value = _gemini_sized_vector(0.25)
+        store = PgVectorDocumentStore(embedding_client=mock_embed)
+
+        ids = store.add_documents(
+            [chunk.content],
+            metadatas=[{**(chunk.metadata_json or {}), 'chunk_id': str(chunk.id)}],
+        )
+        self.assertEqual(ids, [str(chunk.id)])
+        mock_embed.embed_documents.assert_called_once()
+        chunk.refresh_from_db()
+        self.assertEqual(chunk.vector_document_id, str(chunk.id))
+        self.assertIsNotNone(chunk.embedding)
+
+        hits = store.search(
+            'user query',
+            top_k=3,
+            filters={'lesson_id': str(lesson.id), 'ingestion_job_id': str(job.id)},
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertIn('unique retrieval phrase', hits[0]['content'])
+
+        other_lesson, _other_job, other_chunk = self._create_chunk(content_markdown='other lesson body')
+        mock_embed.embed_documents.return_value = [_gemini_sized_vector(0.9)]
+        store.add_documents(
+            [other_chunk.content],
+            metadatas=[{**(other_chunk.metadata_json or {}), 'chunk_id': str(other_chunk.id)}],
+        )
+
+        mock_embed.embed_query.return_value = _gemini_sized_vector(0.25)
+        scoped = store.search(
+            'user query',
+            top_k=5,
+            filters={'lesson_id': str(lesson.id)},
+        )
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0]['content'], chunk.content)
+
+        mock_embed.embed_query.return_value = _gemini_sized_vector(0.9)
+        scoped_job = store.search(
+            'user query',
+            top_k=5,
+            filters={
+                'lesson_id': str(other_lesson.id),
+                'ingestion_job_id': str(other_chunk.ingestion_job_id),
+            },
+        )
+        self.assertEqual(len(scoped_job), 1)
+        self.assertEqual(scoped_job[0]['content'], other_chunk.content)
+
+        store.delete_documents([str(chunk.id)])
+        chunk.refresh_from_db()
+        self.assertIsNone(chunk.embedding)
+        self.assertEqual(chunk.vector_document_id, '')
+
+    @override_settings(AI_RAG_ENABLED=True, AI_VECTOR_STORE='pgvector')
+    def test_retrieve_context_uses_pgvector_store(self):
+        lesson, job, chunk = self._create_chunk(content_markdown='rag line')
+        mock_embed = MagicMock()
+        mock_embed.embed_documents.return_value = [_gemini_sized_vector(0.1)]
+        mock_embed.embed_query.return_value = _gemini_sized_vector(0.1)
+
+        with patch(
+            'apps.ai.services.rag.gemini_embedding_client.get_gemini_embedding_client',
+            return_value=mock_embed,
+        ):
+            rag_retriever.reset_document_store_cache()
+            store = PgVectorDocumentStore(embedding_client=mock_embed)
+            store.add_documents(
+                [chunk.content],
+                metadatas=[{**(chunk.metadata_json or {}), 'chunk_id': str(chunk.id)}],
+            )
+            texts = retrieve_context(
+                'question',
+                filters={'lesson_id': str(lesson.id), 'ingestion_job_id': str(job.id)},
+            )
+        self.assertEqual(texts, ['rag line'])
 

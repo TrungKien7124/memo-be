@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -95,6 +96,8 @@ STATIC_URL = '/static/'
 STATIC_ROOT = os.getenv('STATIC_ROOT', str(BASE_DIR / 'staticfiles'))
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.getenv('MEDIA_ROOT', str(BASE_DIR / 'media'))
 
 # REST Framework
 REST_FRAMEWORK = {
@@ -199,10 +202,26 @@ AI_LOCAL_TTS_TIMEOUT = int(os.getenv('AI_LOCAL_TTS_TIMEOUT', '60'))
 
 # RAG configuration
 AI_RAG_ENABLED = os.getenv('AI_RAG_ENABLED', 'false').lower() in ('true', '1', 'yes')
-AI_VECTOR_STORE = os.getenv('AI_VECTOR_STORE', 'chroma')
+AI_VECTOR_STORE = os.getenv('AI_VECTOR_STORE', 'pgvector')
 AI_VECTOR_STORE_PATH = os.getenv('AI_VECTOR_STORE_PATH', '')
 AI_VECTOR_COLLECTION = os.getenv('AI_VECTOR_COLLECTION', 'memo_rag')
 AI_RAG_TOP_K = int(os.getenv('AI_RAG_TOP_K', '5'))
+# pgvector column width for LessonContentChunk.embedding; change only with a new migration.
+AI_PGVECTOR_SCHEMA_EMBEDDING_DIMENSIONS = 768
+# Gemini embeddings (lesson RAG index + retrieval queries only; generation stays local)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+AI_GEMINI_EMBED_MODEL = os.getenv('AI_GEMINI_EMBED_MODEL', 'gemini-embedding-001')
+AI_GEMINI_EMBED_DIMENSIONS = int(os.getenv('AI_GEMINI_EMBED_DIMENSIONS', '768'))
+AI_GEMINI_EMBED_TIMEOUT = int(os.getenv('AI_GEMINI_EMBED_TIMEOUT', '60'))
+AI_GEMINI_EMBED_BATCH_SIZE = int(os.getenv('AI_GEMINI_EMBED_BATCH_SIZE', '16'))
+if AI_VECTOR_STORE == 'pgvector' and AI_GEMINI_EMBED_DIMENSIONS != AI_PGVECTOR_SCHEMA_EMBEDDING_DIMENSIONS:
+    raise ImproperlyConfigured(
+        f'AI_GEMINI_EMBED_DIMENSIONS ({AI_GEMINI_EMBED_DIMENSIONS}) must equal '
+        f'AI_PGVECTOR_SCHEMA_EMBEDDING_DIMENSIONS ({AI_PGVECTOR_SCHEMA_EMBEDDING_DIMENSIONS}) when '
+        'AI_VECTOR_STORE=pgvector. The database column lesson_content_chunks.embedding is fixed to '
+        'that width; add a migration to resize it before using another output_dimensionality.'
+    )
+# Legacy Chroma + Ollama embedding (optional; only if AI_VECTOR_STORE=chroma)
 AI_OLLAMA_EMBED_URL = os.getenv('AI_OLLAMA_EMBED_URL', 'http://host.docker.internal:11434')
 AI_OLLAMA_EMBED_MODEL = os.getenv('AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
 AI_OLLAMA_EMBED_TIMEOUT = int(os.getenv('AI_OLLAMA_EMBED_TIMEOUT', '30'))

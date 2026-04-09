@@ -2,8 +2,7 @@ from django.utils import timezone
 
 from apps.app_server.models.lesson_model import (
     LESSON_TYPE_QUIZ,
-    LESSON_TYPE_TEXT,
-    LESSON_TYPE_VIDEO,
+    LESSON_TYPE_LESSON,
 )
 from apps.app_server.services.xp_service import award_xp
 
@@ -49,16 +48,13 @@ def update_lesson_progress(progress_instance, watched_seconds):
     return newly_completed
 
 
-def complete_non_quiz_lesson(progress_instance, watched_seconds=0, force_complete=False):
+def complete_non_quiz_lesson(progress_instance, watched_seconds=0):
     """
-    Hoàn thành lesson không phải quiz theo rule riêng của từng loại lesson.
+    Hoàn thành lesson thường (không phải quiz) theo watch-time.
 
     Args:
         progress_instance: Bản ghi ``LessonProgress`` cần cập nhật.
         watched_seconds: Số giây xem tối đa muốn đồng bộ vào progress.
-        force_complete: Chỉ áp dụng cho lesson text; nếu ``True`` thì cho phép
-            complete ngay mà không cần rule thời lượng.
-
     Returns:
         ``True`` nếu lesson vừa mới được complete ở lần gọi này, ngược lại trả
         ``False``.
@@ -73,27 +69,11 @@ def complete_non_quiz_lesson(progress_instance, watched_seconds=0, force_complet
 
     progress_instance.watched_seconds = max(progress_instance.watched_seconds, watched_seconds)
 
-    if lesson_type == LESSON_TYPE_TEXT and force_complete:
-        newly_completed = not progress_instance.completed
-        progress_instance.completed = True
-        if newly_completed:
-            progress_instance.completed_at = timezone.now()
-    elif lesson_type == LESSON_TYPE_VIDEO:
-        newly_completed = update_lesson_progress(progress_instance, progress_instance.watched_seconds)
-        return newly_completed
-    else:
-        newly_completed = False
+    if lesson_type != LESSON_TYPE_LESSON:
+        return False
 
-    progress_instance.save()
-
-    if newly_completed:
-        award_xp(
-            user=progress_instance.user,
-            source='lesson',
-            source_id=progress_instance.lesson.id,
-        )
-
-    return newly_completed
+    # Always complete lesson by minimum watch time.
+    return update_lesson_progress(progress_instance, progress_instance.watched_seconds)
 
 
 def _sync_quiz_totals(progress_instance, total_questions):

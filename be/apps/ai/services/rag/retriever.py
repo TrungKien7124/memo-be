@@ -7,6 +7,11 @@ logger = logging.getLogger(__name__)
 _document_store_instance = None
 
 
+def reset_document_store_cache():
+    global _document_store_instance
+    _document_store_instance = None
+
+
 def get_document_store():
     """
     Lấy singleton document store theo cấu hình RAG hiện tại.
@@ -30,11 +35,16 @@ def get_document_store():
     if _document_store_instance is not None:
         return _document_store_instance
 
-    store_backend = getattr(settings, 'AI_VECTOR_STORE', 'chroma')
+    store_backend = getattr(settings, 'AI_VECTOR_STORE', 'pgvector')
     persist_dir = getattr(settings, 'AI_VECTOR_STORE_PATH', None)
 
-    if store_backend == 'chroma':
+    if store_backend == 'pgvector':
+        from apps.ai.services.rag.document_store import PgVectorDocumentStore
+
+        _document_store_instance = PgVectorDocumentStore()
+    elif store_backend == 'chroma':
         from apps.ai.services.rag.document_store import ChromaDocumentStore
+
         _document_store_instance = ChromaDocumentStore(
             collection_name=getattr(settings, 'AI_VECTOR_COLLECTION', 'memo_rag'),
             persist_directory=persist_dir,

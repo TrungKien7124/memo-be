@@ -5,7 +5,7 @@ x-common-env: &common-env
 services:
   # ──────────────── PostgreSQL ────────────────
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     restart: unless-stopped
     env_file:
       - .env.docker
@@ -53,6 +53,7 @@ services:
       - "${WEB_PORT:-8000}:8000"
     volumes:
       - static_files:/app/be/staticfiles
+      - media_files:/app/be/media
       - rag_data:/app/data/chroma
     environment:
       RUN_MIGRATIONS: "true"
@@ -74,6 +75,7 @@ services:
     command: celery -A memo_backend worker -l info --concurrency=2
     working_dir: /app/be
     volumes:
+      - media_files:/app/be/media
       - rag_data:/app/data/chroma
     environment:
       RUN_MIGRATIONS: "false"
@@ -114,6 +116,7 @@ services:
     command: daphne -b 0.0.0.0 -p 8001 memo_backend.asgi:application
     working_dir: /app/be
     volumes:
+      - media_files:/app/be/media
       - rag_data:/app/data/chroma
     ports:
       - "${WS_PORT:-8001}:8001"
@@ -134,6 +137,8 @@ volumes:
   redis_data:
     driver: local
   static_files:
+    driver: local
+  media_files:
     driver: local
   rag_data:
     driver: local

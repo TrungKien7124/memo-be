@@ -107,8 +107,8 @@ class LessonIngestionProcessingAPITestCase(TestCase):
             char_start=0,
             char_end=len(normalized_text),
             vector_document_id='seed-vector-id',
-            embedding_provider='chroma',
-            embedding_model='nomic-embed-text',
+            embedding_provider='gemini',
+            embedding_model='gemini-embedding-001',
             metadata_json=metadata_json,
             is_active=True,
         )
@@ -405,8 +405,8 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
             char_start=0,
             char_end=len(normalized_text),
             vector_document_id='seed-vector-id',
-            embedding_provider='chroma',
-            embedding_model='nomic-embed-text',
+            embedding_provider='gemini',
+            embedding_model='gemini-embedding-001',
             metadata_json={
                 'lesson_id': str(lesson.id),
                 'module_id': str(lesson.module.id),

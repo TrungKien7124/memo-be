@@ -1,6 +1,8 @@
 from apps.app_server.models.lesson_model import Lesson
 from apps.app_server.models.module_model import Module
 from apps.app_server.models.lesson_progress_model import LessonProgress
+from apps.app_server.models.user_model import ROLE_TEACHER
+from apps.app_server.services.course_access_service import user_has_course_access
 
 
 def get_module_state_map(user, course_id):
@@ -38,8 +40,11 @@ def get_module_state_map(user, course_id):
         lessons_by_module.setdefault(lesson.module_id, []).append(lesson)
 
     state_map = {}
+    teacher_has_full_unlock = user.role == ROLE_TEACHER and user_has_course_access(user, course_id)
     for index, module in enumerate(modules):
-        if index == 0:
+        if teacher_has_full_unlock:
+            is_unlocked = True
+        elif index == 0:
             is_unlocked = True
         else:
             previous_module = modules[index - 1]
@@ -89,6 +94,17 @@ def get_lesson_status_map(user, module_id):
         progress.lesson_id: progress
         for progress in LessonProgress.objects.filter(user=user, lesson_id__in=[lesson.id for lesson in lessons])
     }
+
+    teacher_has_full_unlock = (
+        user.role == ROLE_TEACHER
+        and user_has_course_access(user, lessons[0].module.course_id)
+    )
+
+    if teacher_has_full_unlock:
+        return {
+            lesson.id: 'completed' if (progress_map.get(lesson.id) and progress_map[lesson.id].completed) else 'current'
+            for lesson in lessons
+        }
 
     status_map = {}
     current_assigned = False

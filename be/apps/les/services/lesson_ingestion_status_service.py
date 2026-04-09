@@ -45,7 +45,11 @@ def get_lesson_ingestion_status(lesson: Lesson) -> dict:
     has_active_chunk_set = active_chunk_count > 0
 
     active_chunks = list(active_chunks_qs.values('embedding_model', 'metadata_json'))
-    expected_embedding_model = getattr(settings, 'AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+    vector_store = getattr(settings, 'AI_VECTOR_STORE', 'pgvector')
+    if vector_store == 'chroma':
+        expected_embedding_model = getattr(settings, 'AI_OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+    else:
+        expected_embedding_model = getattr(settings, 'AI_GEMINI_EMBED_MODEL', 'gemini-embedding-001')
 
     active_chunk_set_has_ingestion_job_id_metadata = all(
         bool(chunk['metadata_json'] and chunk['metadata_json'].get('ingestion_job_id'))

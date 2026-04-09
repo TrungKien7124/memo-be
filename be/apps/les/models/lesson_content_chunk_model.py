@@ -1,4 +1,6 @@
+from django.conf import settings
 from django.db import models
+from pgvector.django import HnswIndex, VectorField
 
 from apps.app_server.models.base_model import BaseModel
 
@@ -37,6 +39,11 @@ class LessonContentChunk(BaseModel):
     embedding_model = models.CharField(max_length=255, blank=True, default='')
     metadata_json = models.JSONField(default=dict, blank=True)
     is_active = models.BooleanField(default=False, db_index=True)
+    embedding = VectorField(
+        dimensions=getattr(settings, 'AI_PGVECTOR_SCHEMA_EMBEDDING_DIMENSIONS', 768),
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         db_table = 'lesson_content_chunks'
@@ -50,6 +57,13 @@ class LessonContentChunk(BaseModel):
         indexes = [
             models.Index(fields=['lesson', 'is_active'], name='idx_chunk_lesson_active'),
             models.Index(fields=['vector_document_id'], name='idx_chunk_vector_doc'),
+            HnswIndex(
+                name='lesson_chunk_embedding_hnsw',
+                fields=['embedding'],
+                m=16,
+                ef_construction=64,
+                opclasses=['vector_cosine_ops'],
+            ),
         ]
 
     def __str__(self):

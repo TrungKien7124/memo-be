@@ -1,4 +1,8 @@
 from datetime import timedelta
+from urllib.parse import urlparse
+from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -8,14 +12,17 @@ from unittest.mock import patch
 from django.utils import timezone
 
 from apps.app_server.models.course_model import Course, COURSE_STATUS_PUBLISHED
+from apps.app_server.models.course_enrollment_model import CourseEnrollment
 from apps.app_server.models.lesson_model import (
+    LESSON_TYPE_LESSON,
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     LESSON_TYPE_VIDEO,
     Lesson,
 )
+from apps.app_server.models.lesson_comment_model import LessonComment
 from apps.app_server.models.module_model import Module
-from apps.app_server.models.user_model import ROLE_STUDENT, ROLE_TEACHER, User
+from apps.app_server.models.user_model import ROLE_ADMIN, ROLE_STUDENT, ROLE_TEACHER, User
 from apps.app_server.models.lesson_progress_model import LessonProgress
 from apps.app_server.models.xp_transaction_model import XPTransaction
 from apps.app_server.models.user_xp_model import UserXP
@@ -80,6 +87,7 @@ class CoreContractAPITestCase(APITestCase):
             ],
             order_index=3,
         )
+        CourseEnrollment.objects.create(user=self.user, course=self.course)
 
     def test_register_success_uses_data_envelope(self):
         self.client.force_authenticate(user=None)
@@ -113,6 +121,48 @@ class CoreContractAPITestCase(APITestCase):
         self.assertIn('data', response.data)
         self.assertIn('user', response.data['data'])
         self.assertIn('tokens', response.data['data'])
+
+    def test_login_success_with_username_uses_data_envelope(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            '/api/auth/login/',
+            {'email': self.user.username, 'password': self.password},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('data', response.data)
+        self.assertIn('user', response.data['data'])
+        self.assertIn('tokens', response.data['data'])
+        self.assertEqual(response.data['data']['user']['username'], self.user.username)
+
+    def test_login_blank_identifier_fails_with_validation_shape(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            '/api/auth/login/',
+            {'email': '   ', 'password': self.password},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'warning')
+        self.assertEqual(response.data['code'], 603)
+        self.assertIn('data', response.data)
+        self.assertIn('errors', response.data['data'])
+        self.assertIn('email', response.data['data']['errors'])
+
+    def test_login_invalid_identifier_fails_with_standard_error_envelope(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            '/api/auth/login/',
+            {'email': 'unknown-user', 'password': self.password},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['status'], 'warning')
+        self.assertEqual(response.data['code'], 603)
+        self.assertIn('message', response.data)
 
     def test_refresh_success_uses_data_envelope(self):
         self.client.force_authenticate(user=None)
@@ -159,6 +209,124 @@ class CoreContractAPITestCase(APITestCase):
         self.assertIn('data', response.data)
         self.assertEqual(str(response.data['data']['id']), str(self.course.id))
 
+    def test_courses_payload_includes_is_enrolled(self):
+        response = self.client.get('/api/courses/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        records = response.data['data']['records']
+        self.assertIn('is_enrolled', records[0])
+
+    def test_course_detail_payload_includes_is_enrolled(self):
+        response = self.client.get(f'/api/courses/{self.course.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('is_enrolled', response.data['data'])
+        self.assertTrue(response.data['data']['is_enrolled'])
+
+    def test_enroll_endpoint_creates_enrollment(self):
+        self.client.force_authenticate(user=None)
+        other_user = User.objects.create_user(
+            email='enroll-student@example.com',
+            username='enroll-student',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.client.force_authenticate(user=other_user)
+        self.assertFalse(CourseEnrollment.objects.filter(user=other_user, course=self.course).exists())
+
+        response = self.client.post(f'/api/courses/{self.course.id}/enroll/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(CourseEnrollment.objects.filter(user=other_user, course=self.course).exists())
+        self.assertTrue(response.data['data']['is_enrolled'])
+
+    def test_enroll_endpoint_is_idempotent(self):
+        response_1 = self.client.post(f'/api/courses/{self.course.id}/enroll/', {}, format='json')
+        response_2 = self.client.post(f'/api/courses/{self.course.id}/enroll/', {}, format='json')
+        self.assertEqual(response_1.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_2.status_code, status.HTTP_200_OK)
+        self.assertEqual(CourseEnrollment.objects.filter(user=self.user, course=self.course).count(), 1)
+
+    def test_non_enrolled_user_cannot_access_modules(self):
+        self.client.force_authenticate(user=None)
+        other_user = User.objects.create_user(
+            email='no-module-access@example.com',
+            username='no-module-access',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.client.force_authenticate(user=other_user)
+
+        response = self.client.get(f'/api/modules/?course={self.course.id}')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['status'], 'error')
+        self.assertEqual(response.data['code'], 602)
+
+    def test_non_enrolled_user_cannot_access_lessons(self):
+        self.client.force_authenticate(user=None)
+        other_user = User.objects.create_user(
+            email='no-lesson-access@example.com',
+            username='no-lesson-access',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.client.force_authenticate(user=other_user)
+
+        response = self.client.get(f'/api/lessons/?module={self.module.id}')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['status'], 'error')
+        self.assertEqual(response.data['code'], 602)
+
+    def test_non_enrolled_user_cannot_submit_lesson_progress(self):
+        self.client.force_authenticate(user=None)
+        other_user = User.objects.create_user(
+            email='no-progress-access@example.com',
+            username='no-progress-access',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.client.force_authenticate(user=other_user)
+
+        response = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.video_lesson.id), 'watched_seconds': 10},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['status'], 'error')
+        self.assertEqual(response.data['code'], 602)
+
+    def test_enrolled_user_can_access_modules_lessons_and_progress(self):
+        response_modules = self.client.get(f'/api/modules/?course={self.course.id}')
+        response_lessons = self.client.get(f'/api/lessons/?module={self.module.id}')
+        response_progress = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.video_lesson.id), 'watched_seconds': 10},
+            format='json',
+        )
+
+        self.assertEqual(response_modules.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_lessons.status_code, status.HTTP_200_OK)
+        self.assertIn(response_progress.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+
+    def test_admin_bypass_course_access_still_works(self):
+        self.client.force_authenticate(user=None)
+        admin_user = User.objects.create_user(
+            email='admin-access@example.com',
+            username='admin-access',
+            password=self.password,
+            role=ROLE_ADMIN,
+        )
+        self.client.force_authenticate(user=admin_user)
+
+        response_modules = self.client.get(f'/api/modules/?course={self.course.id}')
+        response_lessons = self.client.get(f'/api/lessons/?module={self.module.id}')
+        response_progress = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.video_lesson.id), 'watched_seconds': 10},
+            format='json',
+        )
+        self.assertEqual(response_modules.status_code, status.HTTP_200_OK)
+        self.assertEqual(response_lessons.status_code, status.HTTP_200_OK)
+        self.assertIn(response_progress.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+
     def test_lesson_detail_uses_data_envelope(self):
         response = self.client.get(f'/api/lessons/{self.video_lesson.id}/')
 
@@ -178,7 +346,7 @@ class CoreContractAPITestCase(APITestCase):
         self.assertNotIn('quiz_result', response.data)
         self.assertTrue(response.data['data']['completed'])
 
-    def test_text_progress_update_uses_data_envelope(self):
+    def test_lesson_progress_requires_watch_time_to_complete(self):
         response = self.client.post(
             '/api/lesson-progress/',
             {'lesson': str(self.text_lesson.id), 'completed': True},
@@ -188,7 +356,15 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn('data', response.data)
         self.assertNotIn('quiz_result', response.data)
-        self.assertTrue(response.data['data']['completed'])
+        self.assertFalse(response.data['data']['completed'])
+
+        second_response = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.text_lesson.id), 'watched_seconds': self.text_lesson.min_watch_time},
+            format='json',
+        )
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(second_response.data['data']['completed'])
 
     def test_quiz_submission_nests_runtime_under_data(self):
         response = self.client.post(
@@ -471,6 +647,249 @@ class CoreContractAPITestCase(APITestCase):
         self.assertEqual(response.data['code'], 604)
 
 
+class CourseAccessManagementAPITestCase(APITestCase):
+    def setUp(self):
+        self.password = 'Password@123'
+        self.admin = User.objects.create_user(
+            email='admin-course-access@example.com',
+            username='admin-course-access',
+            password=self.password,
+            role=ROLE_ADMIN,
+        )
+        self.teacher_1 = User.objects.create_user(
+            email='teacher-1@example.com',
+            username='teacher-1',
+            password=self.password,
+            role=ROLE_TEACHER,
+        )
+        self.teacher_2 = User.objects.create_user(
+            email='teacher-2@example.com',
+            username='teacher-2',
+            password=self.password,
+            role=ROLE_TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email='student-course-access@example.com',
+            username='student-course-access',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+
+        self.course = Course.objects.create(
+            title='Managed Access Course',
+            description='Course for access management tests',
+            status=COURSE_STATUS_PUBLISHED,
+            created_by=self.admin,
+        )
+        self.module_1 = Module.objects.create(
+            course=self.course,
+            title='Module 1',
+            order_index=1,
+        )
+        self.module_2 = Module.objects.create(
+            course=self.course,
+            title='Module 2',
+            order_index=2,
+        )
+        self.lesson_1 = Lesson.objects.create(
+            module=self.module_1,
+            title='Lesson 1',
+            lesson_type=LESSON_TYPE_TEXT,
+            content_markdown='Lesson 1 content',
+            order_index=1,
+        )
+        self.lesson_2 = Lesson.objects.create(
+            module=self.module_1,
+            title='Lesson 2',
+            lesson_type=LESSON_TYPE_TEXT,
+            content_markdown='Lesson 2 content',
+            order_index=2,
+        )
+        self.lesson_3 = Lesson.objects.create(
+            module=self.module_2,
+            title='Lesson 3',
+            lesson_type=LESSON_TYPE_TEXT,
+            content_markdown='Lesson 3 content',
+            order_index=1,
+        )
+
+    def _admin_client(self):
+        self.client.force_authenticate(user=self.admin)
+
+    def _teacher_client(self):
+        self.client.force_authenticate(user=self.teacher_1)
+
+    def _student_client(self):
+        self.client.force_authenticate(user=self.student)
+
+    def test_admin_can_grant_access_to_student(self):
+        self._admin_client()
+        response = self.client.post(
+            f'/api/courses/{self.course.id}/enrollments/',
+            {'user_id': str(self.student.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(CourseEnrollment.objects.filter(user=self.student, course=self.course).exists())
+        self.assertEqual(response.data['data']['source'], CourseEnrollment.SOURCE_ADMIN_GRANT)
+
+    def test_admin_can_grant_access_to_teacher(self):
+        self._admin_client()
+        response = self.client.post(
+            f'/api/courses/{self.course.id}/enrollments/',
+            {'user_id': str(self.teacher_1.id)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(CourseEnrollment.objects.filter(user=self.teacher_1, course=self.course).exists())
+        self.assertEqual(response.data['data']['source'], CourseEnrollment.SOURCE_ADMIN_GRANT)
+
+    def test_admin_can_revoke_access(self):
+        enrollment = CourseEnrollment.objects.create(
+            user=self.teacher_1,
+            course=self.course,
+            source=CourseEnrollment.SOURCE_ADMIN_GRANT,
+            granted_by=self.admin,
+        )
+        self._admin_client()
+        response = self.client.delete(f'/api/courses/{self.course.id}/enrollments/{enrollment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(CourseEnrollment.objects.filter(id=enrollment.id).exists())
+
+    def test_admin_can_bulk_grant_all_teachers(self):
+        self._admin_client()
+        response = self.client.post(
+            f'/api/courses/{self.course.id}/enrollments/bulk-grant-teachers/',
+            {},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['created_count'], 2)
+        self.assertEqual(CourseEnrollment.objects.filter(course=self.course, user__role=ROLE_TEACHER).count(), 2)
+
+    def test_bulk_grant_teachers_is_idempotent(self):
+        self._admin_client()
+        first = self.client.post(f'/api/courses/{self.course.id}/enrollments/bulk-grant-teachers/', {}, format='json')
+        second = self.client.post(f'/api/courses/{self.course.id}/enrollments/bulk-grant-teachers/', {}, format='json')
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data['data']['created_count'], 0)
+        self.assertEqual(second.data['data']['existing_count'], 2)
+
+    def test_non_admin_cannot_manage_course_access_apis(self):
+        self._student_client()
+        list_response = self.client.get(f'/api/courses/{self.course.id}/enrollments/')
+        grant_response = self.client.post(
+            f'/api/courses/{self.course.id}/enrollments/',
+            {'user_id': str(self.teacher_1.id)},
+            format='json',
+        )
+        bulk_response = self.client.post(f'/api/courses/{self.course.id}/enrollments/bulk-grant-teachers/', {}, format='json')
+
+        self.assertEqual(list_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(grant_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(bulk_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(list_response.data['code'], 602)
+        self.assertEqual(grant_response.data['code'], 602)
+        self.assertEqual(bulk_response.data['code'], 602)
+
+    def test_teacher_without_enrollment_cannot_access_course_content(self):
+        self._teacher_client()
+        modules_response = self.client.get(f'/api/modules/?course={self.course.id}')
+        lessons_response = self.client.get(f'/api/lessons/?module={self.module_1.id}')
+        progress_response = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.lesson_1.id), 'completed': True},
+            format='json',
+        )
+
+        self.assertEqual(modules_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(lessons_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(progress_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(modules_response.data['code'], 602)
+        self.assertEqual(lessons_response.data['code'], 602)
+        self.assertEqual(progress_response.data['code'], 602)
+
+    def test_teacher_with_enrollment_can_access_course_content(self):
+        CourseEnrollment.objects.create(
+            user=self.teacher_1,
+            course=self.course,
+            source=CourseEnrollment.SOURCE_ADMIN_GRANT,
+            granted_by=self.admin,
+        )
+        self._teacher_client()
+        modules_response = self.client.get(f'/api/modules/?course={self.course.id}')
+        lessons_response = self.client.get(f'/api/lessons/?module={self.module_1.id}')
+        progress_response = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.lesson_1.id), 'completed': True},
+            format='json',
+        )
+
+        self.assertEqual(modules_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(lessons_response.status_code, status.HTTP_200_OK)
+        self.assertIn(progress_response.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+
+    def test_teacher_with_enrollment_sees_all_modules_unlocked(self):
+        CourseEnrollment.objects.create(
+            user=self.teacher_1,
+            course=self.course,
+            source=CourseEnrollment.SOURCE_ADMIN_GRANT,
+            granted_by=self.admin,
+        )
+        self._teacher_client()
+        response = self.client.get(f'/api/modules/?course={self.course.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        records = response.data['data']['records']
+        self.assertTrue(all(module['is_unlocked'] for module in records))
+
+    def test_teacher_with_enrollment_sees_lessons_not_locked(self):
+        CourseEnrollment.objects.create(
+            user=self.teacher_1,
+            course=self.course,
+            source=CourseEnrollment.SOURCE_ADMIN_GRANT,
+            granted_by=self.admin,
+        )
+        self._teacher_client()
+        response = self.client.get(f'/api/lessons/?module={self.module_1.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        records = response.data['data']['records']
+        self.assertTrue(all(lesson['status'] in ('current', 'completed') for lesson in records))
+
+    def test_student_with_enrollment_keeps_sequential_unlock_behavior(self):
+        CourseEnrollment.objects.create(
+            user=self.student,
+            course=self.course,
+            source=CourseEnrollment.SOURCE_ADMIN_GRANT,
+            granted_by=self.admin,
+        )
+        self._student_client()
+        modules_response = self.client.get(f'/api/modules/?course={self.course.id}')
+        self.assertEqual(modules_response.status_code, status.HTTP_200_OK)
+        modules = modules_response.data['data']['records']
+        self.assertTrue(modules[0]['is_unlocked'])
+        self.assertFalse(modules[1]['is_unlocked'])
+
+        lessons_response = self.client.get(f'/api/lessons/?module={self.module_1.id}')
+        self.assertEqual(lessons_response.status_code, status.HTTP_200_OK)
+        lessons = lessons_response.data['data']['records']
+        self.assertEqual(lessons[0]['status'], 'current')
+        self.assertEqual(lessons[1]['status'], 'locked')
+
+    def test_admin_bypass_still_works_without_enrollment(self):
+        self._admin_client()
+        modules_response = self.client.get(f'/api/modules/?course={self.course.id}')
+        lessons_response = self.client.get(f'/api/lessons/?module={self.module_1.id}')
+        progress_response = self.client.post(
+            '/api/lesson-progress/',
+            {'lesson': str(self.lesson_1.id), 'completed': True},
+            format='json',
+        )
+        self.assertEqual(modules_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(lessons_response.status_code, status.HTTP_200_OK)
+        self.assertIn(progress_response.status_code, (status.HTTP_200_OK, status.HTTP_201_CREATED))
+
+
 class LessonIngestionSchedulingAPITestCase(APITestCase):
     def setUp(self):
         self.password = 'Password@123'
@@ -497,13 +916,13 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     def _build_text_lesson_payload(self, **overrides):
         base = {
             'module': str(self.module.id),
-            'title': 'Text Lesson',
-            'lesson_type': LESSON_TYPE_TEXT,
-            'content_markdown': 'Hello world',
+            'title': 'Lesson',
+            'lesson_type': LESSON_TYPE_LESSON,
+            'content_markdown': 'Hello world summary',
+            'video_url': 'https://example.com/lesson.mp4',
             'order_index': 1,
             'min_watch_time': 10,
             'quiz_questions': [],
-            'video_url': '',
             'is_final': False,
         }
         base.update(overrides)
@@ -512,10 +931,10 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
     def _build_video_lesson_payload(self, **overrides):
         base = {
             'module': str(self.module.id),
-            'title': 'Video Lesson',
-            'lesson_type': LESSON_TYPE_VIDEO,
+            'title': 'Lesson',
+            'lesson_type': LESSON_TYPE_LESSON,
             'video_url': 'https://example.com/video.mp4',
-            'content_markdown': '',
+            'content_markdown': 'Lesson summary',
             'order_index': 1,
             'min_watch_time': 10,
             'quiz_questions': [],
@@ -661,7 +1080,8 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
             f'/api/lessons/{lesson_id}/',
             {
                 'lesson_type': LESSON_TYPE_TEXT,
-                'content_markdown': 'Hello reingested text',
+                'content_markdown': 'Hello reingested lesson summary',
+                'video_url': 'https://example.com/reingest.mp4',
                 'is_final': False,
             },
             format='json',
@@ -701,8 +1121,9 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         lesson = Lesson.objects.create(
             module=self.module,
             title='Task Lesson',
-            lesson_type=LESSON_TYPE_TEXT,
+            lesson_type=LESSON_TYPE_LESSON,
             content_markdown='hello',
+            video_url='https://example.com/task.mp4',
             min_watch_time=10,
             order_index=1,
         )
@@ -719,3 +1140,353 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.status, LessonIngestionJobStatus.COMPLETED)
         self.assertIsNotNone(job.started_at)
         self.assertIsNotNone(job.finished_at)
+
+
+class LessonCommentAPITestCase(APITestCase):
+    def setUp(self):
+        self.password = 'Password@123'
+        self.admin = User.objects.create_user(
+            email='admin-comment@example.com',
+            username='admin-comment',
+            password=self.password,
+            role=ROLE_ADMIN,
+        )
+        self.teacher = User.objects.create_user(
+            email='teacher-comment@example.com',
+            username='teacher-comment',
+            password=self.password,
+            role=ROLE_TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email='student-comment@example.com',
+            username='student-comment',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.other_student = User.objects.create_user(
+            email='other-student-comment@example.com',
+            username='other-student-comment',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+
+        self.course = Course.objects.create(
+            title='Comment Course',
+            description='Course for lesson comments',
+            status=COURSE_STATUS_PUBLISHED,
+            created_by=self.admin,
+        )
+        self.module = Module.objects.create(course=self.course, title='Module', order_index=1)
+        self.lesson = Lesson.objects.create(
+            module=self.module,
+            title='Lesson',
+            lesson_type=LESSON_TYPE_LESSON,
+            video_url='https://example.com/lesson.mp4',
+            content_markdown='Lesson summary',
+            min_watch_time=10,
+            order_index=1,
+        )
+        self.other_lesson = Lesson.objects.create(
+            module=self.module,
+            title='Other Lesson',
+            lesson_type=LESSON_TYPE_LESSON,
+            video_url='https://example.com/other.mp4',
+            content_markdown='Other summary',
+            min_watch_time=10,
+            order_index=2,
+        )
+
+        CourseEnrollment.objects.create(user=self.teacher, course=self.course)
+        CourseEnrollment.objects.create(user=self.student, course=self.course)
+
+    def test_enrolled_student_can_list_comments(self):
+        LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Hello class')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(f'/api/lesson-comments/?lesson={self.lesson.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertEqual(len(response.data['data']), 1)
+
+    def test_non_enrolled_user_forbidden_to_list_comments(self):
+        self.client.force_authenticate(user=self.other_student)
+        response = self.client.get(f'/api/lesson-comments/?lesson={self.lesson.id}')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 602)
+
+    def test_non_enrolled_user_forbidden_to_retrieve_comment(self):
+        comment = LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Secret thread')
+        self.client.force_authenticate(user=self.other_student)
+        response = self.client.get(f'/api/lesson-comments/{comment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 602)
+
+    def test_enrolled_teacher_can_create_top_level_comment(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            '/api/lesson-comments/',
+            {'lesson': str(self.lesson.id), 'content': 'Teacher comment'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['data']['user_role'], ROLE_TEACHER)
+
+    def test_enrolled_student_can_reply_to_teacher_comment(self):
+        parent = LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Question?')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            '/api/lesson-comments/',
+            {'lesson': str(self.lesson.id), 'parent': str(parent.id), 'content': 'Answer'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['data']['parent'], str(parent.id))
+
+    def test_parent_comment_from_another_lesson_is_rejected(self):
+        parent = LessonComment.objects.create(lesson=self.other_lesson, user=self.teacher, content='Other thread')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            '/api/lesson-comments/',
+            {'lesson': str(self.lesson.id), 'parent': str(parent.id), 'content': 'Invalid reply'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_owner_can_edit_own_comment(self):
+        comment = LessonComment.objects.create(lesson=self.lesson, user=self.student, content='Original')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.patch(
+            f'/api/lesson-comments/{comment.id}/',
+            {'content': 'Updated'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['content'], 'Updated')
+
+    def test_non_owner_cannot_edit_other_comment(self):
+        comment = LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Teacher note')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.patch(
+            f'/api/lesson-comments/{comment.id}/',
+            {'content': 'Hijack'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 602)
+
+    def test_owner_can_soft_delete_own_comment(self):
+        comment = LessonComment.objects.create(lesson=self.lesson, user=self.student, content='Delete me')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.delete(f'/api/lesson-comments/{comment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        comment.refresh_from_db()
+        self.assertTrue(comment.is_deleted)
+        self.assertEqual(comment.content, '')
+
+    def test_admin_can_soft_delete_other_user_comment(self):
+        comment = LessonComment.objects.create(lesson=self.lesson, user=self.student, content='Delete by admin')
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(f'/api/lesson-comments/{comment.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        comment.refresh_from_db()
+        self.assertTrue(comment.is_deleted)
+
+    def test_deleted_parent_keeps_thread_shape_with_replies(self):
+        parent = LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Parent')
+        child = LessonComment.objects.create(
+            lesson=self.lesson,
+            user=self.student,
+            parent=parent,
+            content='Child reply',
+        )
+        self.client.force_authenticate(user=self.teacher)
+        self.client.delete(f'/api/lesson-comments/{parent.id}/')
+        response = self.client.get(f'/api/lesson-comments/?lesson={self.lesson.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = response.data['data']
+        parent_row = next(item for item in payload if item['id'] == str(parent.id))
+        child_row = next(item for item in payload if item['id'] == str(child.id))
+        self.assertTrue(parent_row['is_deleted'])
+        self.assertEqual(parent_row['content'], '[deleted]')
+        self.assertEqual(child_row['parent'], str(parent.id))
+
+    def test_comment_list_includes_user_metadata(self):
+        LessonComment.objects.create(lesson=self.lesson, user=self.teacher, content='Meta')
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(f'/api/lesson-comments/?lesson={self.lesson.id}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        item = response.data['data'][0]
+        self.assertIn('user_id', item)
+        self.assertIn('user_email', item)
+        self.assertIn('user_username', item)
+        self.assertIn('user_role', item)
+
+    def test_model_layer_rejects_cross_lesson_parent(self):
+        parent = LessonComment.objects.create(lesson=self.other_lesson, user=self.teacher, content='Other parent')
+        invalid_comment = LessonComment(
+            lesson=self.lesson,
+            user=self.student,
+            parent=parent,
+            content='Cross lesson invalid',
+        )
+        with self.assertRaises(ValidationError):
+            invalid_comment.save()
+
+
+@override_settings(MEDIA_ROOT='/tmp/memo-test-media')
+class LessonVideoPlaybackAPITestCase(APITestCase):
+    def setUp(self):
+        self.password = 'Password@123'
+        self.admin = User.objects.create_user(
+            email='admin-video@example.com',
+            username='admin-video',
+            password=self.password,
+            role=ROLE_ADMIN,
+        )
+        self.student = User.objects.create_user(
+            email='student-video@example.com',
+            username='student-video',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.other_student = User.objects.create_user(
+            email='other-student-video@example.com',
+            username='other-student-video',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.course = Course.objects.create(
+            title='Video Course',
+            description='Video tests',
+            status=COURSE_STATUS_PUBLISHED,
+            created_by=self.admin,
+        )
+        self.module = Module.objects.create(course=self.course, title='Module', order_index=1)
+        self.lesson = Lesson.objects.create(
+            module=self.module,
+            title='Video Lesson',
+            lesson_type=LESSON_TYPE_LESSON,
+            video_url='',
+            content_markdown='Summary',
+            min_watch_time=5,
+            order_index=1,
+        )
+        CourseEnrollment.objects.create(user=self.student, course=self.course)
+
+    @patch('apps.les.services.lesson_video_transcription_scheduling_service.process_lesson_video_transcription.delay')
+    def test_admin_create_lesson_with_video_file(self, mock_delay):
+        self.client.force_authenticate(user=self.admin)
+        video_content = b'\x00' * 1024
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Uploaded Video Lesson',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', video_content, content_type='video/mp4'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = Lesson.objects.get(id=response.data['data']['id'])
+        self.assertTrue(bool(created.video_file))
+        self.assertEqual(created.transcript_status, 'not_started')
+        mock_delay.assert_called_once()
+
+    def test_quiz_rejects_video_file(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Quiz with video',
+                'lesson_type': LESSON_TYPE_QUIZ,
+                'quiz_questions': [
+                    {'question': 'Q1', 'options': ['A', 'B', 'C', 'D'], 'correct_index': 0},
+                ],
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 64, content_type='video/mp4'),
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch('apps.les.services.lesson_video_transcription_scheduling_service.process_lesson_video_transcription.delay')
+    def test_update_video_retriggers_transcript(self, mock_delay):
+        self.client.force_authenticate(user=self.admin)
+        self.lesson.transcript_status = 'ready'
+        self.lesson.transcript_text = 'old transcript'
+        self.lesson.save(update_fields=['transcript_status', 'transcript_text', 'updated_at'])
+        response = self.client.patch(
+            f'/api/lessons/{self.lesson.id}/',
+            {'video_file': SimpleUploadedFile('new.mp4', b'\x00' * 128, content_type='video/mp4')},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.lesson.refresh_from_db()
+        self.assertEqual(self.lesson.transcript_status, 'not_started')
+        self.assertEqual(self.lesson.transcript_text, '')
+        mock_delay.assert_called_once()
+
+    def test_enrolled_user_can_get_playback_and_stream_with_range(self):
+        self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789' * 50, content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.student)
+        metadata_response = self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        self.assertEqual(metadata_response.status_code, status.HTTP_200_OK)
+        stream_url = metadata_response.data['data']['stream_url']
+        self.assertTrue(stream_url.startswith('http://testserver/api/lessons/'))
+
+        stream_path = urlparse(stream_url).path
+        stream_query = urlparse(stream_url).query
+        self.client.force_authenticate(user=None)
+        stream_response = self.client.get(f'{stream_path}?{stream_query}', HTTP_RANGE='bytes=0-19')
+
+        self.assertEqual(stream_response.status_code, status.HTTP_206_PARTIAL_CONTENT)
+        self.assertEqual(stream_response['Accept-Ranges'], 'bytes')
+        self.assertIn('Content-Range', stream_response)
+
+    def test_non_enrolled_user_cannot_get_playback_metadata(self):
+        self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789', content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.other_student)
+        response = self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 602)
+
+    def test_stream_replay_without_playback_cookie_is_forbidden(self):
+        self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789' * 20, content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.student)
+        metadata_response = self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        stream_url = metadata_response.data['data']['stream_url']
+        parsed = urlparse(stream_url)
+        self.client.cookies.clear()
+        self.client.force_authenticate(user=None)
+        stream_response = self.client.get(f'{parsed.path}?{parsed.query}')
+        self.assertEqual(stream_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_stream_replay_with_other_user_cookie_is_forbidden(self):
+        self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789' * 20, content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.student)
+        metadata_response = self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        stream_url = metadata_response.data['data']['stream_url']
+        parsed = urlparse(stream_url)
+
+        # Replace playback cookie with another enrolled user's cookie.
+        self.client.force_authenticate(user=self.admin)
+        self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        self.client.force_authenticate(user=None)
+        stream_response = self.client.get(f'{parsed.path}?{parsed.query}')
+        self.assertEqual(stream_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_lesson_detail_does_not_expose_video_file_path(self):
+        self.lesson.video_file = SimpleUploadedFile('hidden.mp4', b'0123456789', content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.student)
+        response = self.client.get(f'/api/lessons/{self.lesson.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('video_file', response.data['data'])
