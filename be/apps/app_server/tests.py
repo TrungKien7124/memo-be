@@ -18,6 +18,11 @@ from apps.app_server.models.lesson_model import (
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     LESSON_TYPE_VIDEO,
+    PUBLICATION_STATUS_FAILED,
+    PUBLICATION_STATUS_PROCESSING,
+    TRANSCRIPT_STATUS_FAILED,
+    TRANSCRIPT_STATUS_NOT_STARTED,
+    TRANSCRIPT_STATUS_READY,
     Lesson,
 )
 from apps.app_server.models.lesson_comment_model import LessonComment
@@ -34,7 +39,7 @@ from apps.les.models import (
     LessonIngestionJobType,
     LessonIngestionTriggerSource,
 )
-from apps.les.tasks import process_lesson_ingestion_job
+from apps.les.tasks import process_lesson_ingestion_job, process_lesson_video_transcription
 
 
 class CoreContractAPITestCase(APITestCase):
@@ -1036,6 +1041,59 @@ class LessonIngestionSchedulingAPITestCase(APITestCase):
         self.assertEqual(job.status, LessonIngestionJobStatus.PENDING)
         mock_delay.assert_called_once_with(job.id)
 
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
+    def test_update_transcript_text_for_video_lesson_enqueues_reingest_and_builds_source_document(
+        self,
+        mock_delay,
+        mock_index_documents,
+    ):
+        mock_index_documents.side_effect = lambda documents, metadatas=None: [
+            f'vec-{i}' for i in range(len(documents))
+        ]
+        lesson = Lesson.objects.create(
+            module=self.module,
+            title='Video with Manual Transcript',
+            lesson_type=LESSON_TYPE_LESSON,
+            content_markdown='Summary block',
+            video_url='',
+            video_file=SimpleUploadedFile('video.mp4', b'\x00' * 512, content_type='video/mp4'),
+            transcript_text='old transcript',
+            transcript_status=TRANSCRIPT_STATUS_READY,
+            min_watch_time=10,
+            order_index=1,
+        )
+        initial_job = LessonIngestionJob.objects.create(
+            lesson=lesson,
+            job_type=LessonIngestionJobType.INGEST,
+            trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
+            status=LessonIngestionJobStatus.COMPLETED,
+            source_version='v1',
+        )
+        _ = initial_job.id
+        mock_delay.reset_mock()
+
+        response = self.client.patch(
+            f'/api/lessons/{lesson.id}/',
+            {'transcript_text': 'new transcript from admin'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        pending_job = LessonIngestionJob.objects.filter(lesson=lesson).order_by('-created_at').first()
+        self.assertIsNotNone(pending_job)
+        self.assertEqual(pending_job.status, LessonIngestionJobStatus.PENDING)
+        self.assertEqual(pending_job.job_type, LessonIngestionJobType.REINGEST)
+        mock_delay.assert_called_once_with(pending_job.id)
+
+        process_lesson_ingestion_job.run(str(pending_job.id))
+        pending_job.refresh_from_db()
+        self.assertEqual(pending_job.status, LessonIngestionJobStatus.COMPLETED)
+        source_document = pending_job.source_documents.order_by('-created_at').first()
+        self.assertIsNotNone(source_document)
+        self.assertIn('Summary block', source_document.raw_text)
+        self.assertIn('new transcript from admin', source_document.raw_text)
+
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_update_supported_to_quiz_enqueues_delete_index(self, mock_delay):
         create_payload = self._build_text_lesson_payload()
@@ -1333,6 +1391,164 @@ class LessonCommentAPITestCase(APITestCase):
             invalid_comment.save()
 
 
+class CourseAndModuleExtendStoreAPITestCase(APITestCase):
+    def setUp(self):
+        self.password = 'Password@123'
+        self.teacher = User.objects.create_user(
+            email='teacher-extend@example.com',
+            username='teacher-extend',
+            password=self.password,
+            role=ROLE_TEACHER,
+        )
+        self.student = User.objects.create_user(
+            email='student-extend@example.com',
+            username='student-extend',
+            password=self.password,
+            role=ROLE_STUDENT,
+        )
+        self.client.force_authenticate(user=self.teacher)
+
+        self.course = Course.objects.create(
+            title='Extend Course',
+            description='Base',
+            status=COURSE_STATUS_PUBLISHED,
+            created_by=self.teacher,
+        )
+        self.module_a = Module.objects.create(course=self.course, title='A', order_index=1)
+        self.module_b = Module.objects.create(course=self.course, title='B', order_index=2)
+        self.module_c = Module.objects.create(course=self.course, title='C', order_index=3)
+
+        self.lesson_a1 = Lesson.objects.create(
+            module=self.module_a,
+            title='L1',
+            lesson_type=LESSON_TYPE_LESSON,
+            content_markdown='x',
+            video_url='https://example.com/1',
+            min_watch_time=5,
+            order_index=1,
+        )
+        self.lesson_a2 = Lesson.objects.create(
+            module=self.module_a,
+            title='L2',
+            lesson_type=LESSON_TYPE_LESSON,
+            content_markdown='y',
+            video_url='https://example.com/2',
+            min_watch_time=5,
+            order_index=2,
+        )
+
+    def test_course_extend_store_updates_description_and_partial_module_order(self):
+        payload = {
+            'description': 'Updated description',
+            'modules': [
+                {'id': str(self.module_c.id), 'order_index': 1},
+                {'id': str(self.module_a.id), 'order_index': 2},
+            ],
+        }
+        response = self.client.patch(
+            f'/api/courses/{self.course.id}/extend-store/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'success')
+        self.assertIn('modules', response.data['data'])
+        self.course.refresh_from_db()
+        self.assertEqual(self.course.description, 'Updated description')
+        # partial reorder: b should keep previous order_index=2 (after normalization it may tie, but index stays)
+        self.module_a.refresh_from_db()
+        self.module_b.refresh_from_db()
+        self.module_c.refresh_from_db()
+        # c and a get payload order_index values, b unchanged
+        self.assertEqual(self.module_c.order_index, 1)
+        self.assertEqual(self.module_a.order_index, 2)
+        self.assertEqual(self.module_b.order_index, 2)
+
+    def test_module_extend_store_updates_title_and_partial_lesson_order(self):
+        payload = {
+            'title': 'New title',
+            'lessons': [
+                {'id': str(self.lesson_a2.id), 'order_index': 1},
+            ],
+        }
+        response = self.client.patch(
+            f'/api/modules/{self.module_a.id}/extend-store/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], 'success')
+        self.module_a.refresh_from_db()
+        self.assertEqual(self.module_a.title, 'New title')
+        self.lesson_a1.refresh_from_db()
+        self.lesson_a2.refresh_from_db()
+        self.assertEqual(self.lesson_a2.order_index, 1)
+        # partial reorder: omitted children keep existing order_index
+        self.assertEqual(self.lesson_a1.order_index, 1)
+
+    def test_course_extend_store_rejects_duplicate_module_ids(self):
+        payload = {
+            'modules': [
+                {'id': str(self.module_a.id), 'order_index': 1},
+                {'id': str(self.module_a.id), 'order_index': 2},
+            ],
+        }
+        response = self.client.patch(
+            f'/api/courses/{self.course.id}/extend-store/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_module_extend_store_rejects_lesson_from_other_module_and_rolls_back_title(self):
+        other_module = Module.objects.create(course=self.course, title='Other', order_index=10)
+        lesson_other = Lesson.objects.create(
+            module=other_module,
+            title='Other lesson',
+            lesson_type=LESSON_TYPE_LESSON,
+            content_markdown='z',
+            video_url='https://example.com/3',
+            min_watch_time=5,
+            order_index=1,
+        )
+        original_title = self.module_a.title
+        payload = {
+            'title': 'Should not persist',
+            'lessons': [
+                {'id': str(lesson_other.id), 'order_index': 1},
+            ],
+        }
+        response = self.client.patch(
+            f'/api/modules/{self.module_a.id}/extend-store/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+        self.module_a.refresh_from_db()
+        self.assertEqual(self.module_a.title, original_title)
+
+    def test_student_cannot_call_course_extend_store(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.patch(
+            f'/api/courses/{self.course.id}/extend-store/',
+            {'description': 'x'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_student_cannot_call_module_extend_store(self):
+        self.client.force_authenticate(user=self.student)
+        response = self.client.patch(
+            f'/api/modules/{self.module_a.id}/extend-store/',
+            {'title': 'x'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+
 @override_settings(MEDIA_ROOT='/tmp/memo-test-media')
 class LessonVideoPlaybackAPITestCase(APITestCase):
     def setUp(self):
@@ -1385,6 +1601,7 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
                 'lesson_type': LESSON_TYPE_LESSON,
                 'content_markdown': 'Summary',
                 'video_file': SimpleUploadedFile('sample.mp4', video_content, content_type='video/mp4'),
+                'transcript_text': 'Manual transcript from admin upload.',
                 'order_index': 2,
                 'min_watch_time': 10,
             },
@@ -1393,8 +1610,125 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = Lesson.objects.get(id=response.data['data']['id'])
         self.assertTrue(bool(created.video_file))
-        self.assertEqual(created.transcript_status, 'not_started')
-        mock_delay.assert_called_once()
+        self.assertEqual(created.transcript_status, TRANSCRIPT_STATUS_READY)
+        self.assertEqual(created.transcript_text, 'Manual transcript from admin upload.')
+        mock_delay.assert_not_called()
+
+    def test_create_video_file_without_manual_transcript_rejected_when_auto_stt_disabled(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Missing Transcript',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_create_video_lesson_with_transcript_file_txt(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Transcript From File',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'transcript_file': SimpleUploadedFile('transcript.txt', b'Line 1\nLine 2', content_type='text/plain'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = Lesson.objects.get(id=response.data['data']['id'])
+        self.assertEqual(created.transcript_text, 'Line 1\nLine 2')
+        self.assertEqual(created.transcript_status, TRANSCRIPT_STATUS_READY)
+
+    def test_create_video_lesson_with_both_transcript_text_and_file_prioritizes_file(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Transcript Priority',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'transcript_text': 'text input should be ignored',
+                'transcript_file': SimpleUploadedFile('transcript.txt', b'file transcript wins', content_type='text/plain'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = Lesson.objects.get(id=response.data['data']['id'])
+        self.assertEqual(created.transcript_text, 'file transcript wins')
+        self.assertEqual(created.transcript_status, TRANSCRIPT_STATUS_READY)
+
+    def test_create_video_lesson_with_empty_transcript_file_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Empty Transcript File',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'transcript_file': SimpleUploadedFile('transcript.txt', b'   ', content_type='text/plain'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_create_video_lesson_with_invalid_transcript_file_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        bad_extension_response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Bad Transcript Extension',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'transcript_file': SimpleUploadedFile('transcript.md', b'hello', content_type='text/plain'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(bad_extension_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(bad_extension_response.data['code'], 603)
+
+        non_utf8_response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Non UTF8 Transcript',
+                'lesson_type': LESSON_TYPE_LESSON,
+                'content_markdown': 'Summary',
+                'video_file': SimpleUploadedFile('sample.mp4', b'\x00' * 1024, content_type='video/mp4'),
+                'transcript_file': SimpleUploadedFile('transcript.txt', b'\xff\xfe', content_type='text/plain'),
+                'order_index': 2,
+                'min_watch_time': 10,
+            },
+            format='multipart',
+        )
+        self.assertEqual(non_utf8_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(non_utf8_response.data['code'], 603)
 
     def test_quiz_rejects_video_file(self):
         self.client.force_authenticate(user=self.admin)
@@ -1413,6 +1747,23 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_quiz_rejects_transcript_fields(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            '/api/lessons/',
+            {
+                'module': str(self.module.id),
+                'title': 'Quiz with transcript',
+                'lesson_type': LESSON_TYPE_QUIZ,
+                'quiz_questions': [
+                    {'question': 'Q1', 'options': ['A', 'B', 'C', 'D'], 'correct_index': 0},
+                ],
+                'transcript_text': 'Should reject',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     @patch('apps.les.services.lesson_video_transcription_scheduling_service.process_lesson_video_transcription.delay')
     def test_update_video_retriggers_transcript(self, mock_delay):
         self.client.force_authenticate(user=self.admin)
@@ -1421,14 +1772,61 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
         self.lesson.save(update_fields=['transcript_status', 'transcript_text', 'updated_at'])
         response = self.client.patch(
             f'/api/lessons/{self.lesson.id}/',
-            {'video_file': SimpleUploadedFile('new.mp4', b'\x00' * 128, content_type='video/mp4')},
+            {
+                'video_file': SimpleUploadedFile('new.mp4', b'\x00' * 128, content_type='video/mp4'),
+                'transcript_text': 'Updated manual transcript',
+            },
             format='multipart',
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.lesson.refresh_from_db()
-        self.assertEqual(self.lesson.transcript_status, 'not_started')
-        self.assertEqual(self.lesson.transcript_text, '')
-        mock_delay.assert_called_once()
+        self.assertEqual(self.lesson.transcript_status, TRANSCRIPT_STATUS_READY)
+        self.assertEqual(self.lesson.transcript_text, 'Updated manual transcript')
+        mock_delay.assert_not_called()
+
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.transcribe_lesson_video', side_effect=RuntimeError('upstream stt connection failed'))
+    def test_transcript_provider_exception_marks_lesson_failed_without_ingestion(
+        self,
+        _mock_transcribe,
+        mock_ingestion_delay,
+    ):
+        self.lesson.video_file = SimpleUploadedFile('transcript-fail.mp4', b'\x00' * 256, content_type='video/mp4')
+        self.lesson.transcript_status = TRANSCRIPT_STATUS_NOT_STARTED
+        self.lesson.publication_status = PUBLICATION_STATUS_PROCESSING
+        self.lesson.is_active = False
+        self.lesson.save(update_fields=['video_file', 'transcript_status', 'publication_status', 'is_active', 'updated_at'])
+
+        process_lesson_video_transcription.run(str(self.lesson.id))
+        self.lesson.refresh_from_db()
+
+        self.assertEqual(self.lesson.transcript_status, TRANSCRIPT_STATUS_FAILED)
+        self.assertEqual(self.lesson.transcript_error, 'Lesson video transcription failed.')
+        self.assertEqual(self.lesson.publication_status, PUBLICATION_STATUS_FAILED)
+        self.assertFalse(self.lesson.is_active)
+        self.assertEqual(LessonIngestionJob.objects.filter(lesson=self.lesson).count(), 0)
+        mock_ingestion_delay.assert_not_called()
+
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.transcribe_lesson_video', return_value='Uploaded lesson transcript')
+    def test_transcript_success_enqueues_ingestion_after_video_upload(
+        self,
+        _mock_transcribe,
+        mock_ingestion_delay,
+    ):
+        self.lesson.video_file = SimpleUploadedFile('transcript-ok.mp4', b'\x00' * 256, content_type='video/mp4')
+        self.lesson.transcript_status = TRANSCRIPT_STATUS_NOT_STARTED
+        self.lesson.publication_status = PUBLICATION_STATUS_PROCESSING
+        self.lesson.is_active = False
+        self.lesson.save(update_fields=['video_file', 'transcript_status', 'publication_status', 'is_active', 'updated_at'])
+
+        process_lesson_video_transcription.run(str(self.lesson.id))
+        self.lesson.refresh_from_db()
+
+        self.assertEqual(self.lesson.transcript_status, TRANSCRIPT_STATUS_READY)
+        self.assertEqual(self.lesson.transcript_text, 'Uploaded lesson transcript')
+        mock_ingestion_delay.assert_called_once()
+        self.assertEqual(LessonIngestionJob.objects.filter(lesson=self.lesson).count(), 1)
 
     def test_enrolled_user_can_get_playback_and_stream_with_range(self):
         self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789' * 50, content_type='video/mp4')
@@ -1441,8 +1839,16 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
 
         stream_path = urlparse(stream_url).path
         stream_query = urlparse(stream_url).query
+        playback_cookie_header = '; '.join(
+            f'{key}={morsel.value}' for key, morsel in self.client.cookies.items()
+        )
+        self.assertTrue(playback_cookie_header, msg='playback response should set HttpOnly playback cookie')
         self.client.force_authenticate(user=None)
-        stream_response = self.client.get(f'{stream_path}?{stream_query}', HTTP_RANGE='bytes=0-19')
+        stream_response = self.client.get(
+            f'{stream_path}?{stream_query}',
+            HTTP_RANGE='bytes=0-19',
+            HTTP_COOKIE=playback_cookie_header,
+        )
 
         self.assertEqual(stream_response.status_code, status.HTTP_206_PARTIAL_CONTENT)
         self.assertEqual(stream_response['Accept-Ranges'], 'bytes')
@@ -1482,6 +1888,29 @@ class LessonVideoPlaybackAPITestCase(APITestCase):
         self.client.force_authenticate(user=None)
         stream_response = self.client.get(f'{parsed.path}?{parsed.query}')
         self.assertEqual(stream_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_stream_is_forbidden_when_lesson_inactive_even_with_valid_cookie(self):
+        self.lesson.video_file = SimpleUploadedFile('playback.mp4', b'0123456789' * 20, content_type='video/mp4')
+        self.lesson.save(update_fields=['video_file', 'updated_at'])
+        self.client.force_authenticate(user=self.student)
+        metadata_response = self.client.get(f'/api/lessons/{self.lesson.id}/video/playback/')
+        self.assertEqual(metadata_response.status_code, status.HTTP_200_OK)
+        stream_url = metadata_response.data['data']['stream_url']
+        parsed = urlparse(stream_url)
+        playback_cookie_header = '; '.join(
+            f'{key}={morsel.value}' for key, morsel in self.client.cookies.items()
+        )
+
+        self.lesson.is_active = False
+        self.lesson.save(update_fields=['is_active', 'updated_at'])
+
+        self.client.force_authenticate(user=None)
+        stream_response = self.client.get(
+            f'{parsed.path}?{parsed.query}',
+            HTTP_COOKIE=playback_cookie_header,
+        )
+        self.assertEqual(stream_response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(stream_response.data['code'], 602)
 
     def test_lesson_detail_does_not_expose_video_file_path(self):
         self.lesson.video_file = SimpleUploadedFile('hidden.mp4', b'0123456789', content_type='video/mp4')

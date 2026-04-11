@@ -26,6 +26,7 @@ def extract_ingestion_relevant_fields(lesson):
         'lesson_type': _get_value(lesson, 'lesson_type', None),
         'content_markdown': _get_value(lesson, 'content_markdown', '') or '',
         'video_url': _get_value(lesson, 'video_url', '') or '',
+        'transcript_text': (_get_value(lesson, 'transcript_text', '') or '').strip(),
         'title': _get_value(lesson, 'title', '') or '',
     }
 

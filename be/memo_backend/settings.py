@@ -200,6 +200,11 @@ AI_LOCAL_STT_TIMEOUT = int(os.getenv('AI_LOCAL_STT_TIMEOUT', '60'))
 AI_LOCAL_TTS_URL = os.getenv('AI_LOCAL_TTS_URL', 'http://localhost:8082')
 AI_LOCAL_TTS_TIMEOUT = int(os.getenv('AI_LOCAL_TTS_TIMEOUT', '60'))
 
+# Lesson transcript behavior flag:
+# - false: manual transcript text/file required for uploaded video
+# - true: allow async auto STT task scheduling for uploaded video
+LESSON_AUTO_TRANSCRIBE_ENABLED = os.getenv('LESSON_AUTO_TRANSCRIBE_ENABLED', 'false').lower() in ('true', '1', 'yes')
+
 # RAG configuration
 AI_RAG_ENABLED = os.getenv('AI_RAG_ENABLED', 'false').lower() in ('true', '1', 'yes')
 AI_VECTOR_STORE = os.getenv('AI_VECTOR_STORE', 'pgvector')

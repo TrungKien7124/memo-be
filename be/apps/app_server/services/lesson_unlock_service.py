@@ -27,7 +27,7 @@ def get_module_state_map(user, course_id):
 
     lessons = list(
         Lesson.objects.filter(module_id__in=module_ids)
-        .order_by('module_id', 'order_index', 'created_at')
+        .order_by('module_id', 'order_index', 'created_at'),
     )
     lesson_ids = [lesson.id for lesson in lessons]
     progress_map = {
@@ -52,10 +52,14 @@ def get_module_state_map(user, course_id):
             is_unlocked = bool(previous_module_state.get('is_completed', False))
 
         module_lessons = lessons_by_module.get(module.id, [])
-        is_completed = all(
-            bool(progress_map.get(lesson.id) and progress_map[lesson.id].completed)
-            for lesson in module_lessons
-        )
+        active_module_lessons = [lesson for lesson in module_lessons if lesson.is_active]
+        if not active_module_lessons:
+            is_completed = True
+        else:
+            is_completed = all(
+                bool(progress_map.get(lesson.id) and progress_map[lesson.id].completed)
+                for lesson in active_module_lessons
+            )
         state_map[module.id] = {
             'is_unlocked': is_unlocked,
             'is_completed': is_completed,
@@ -79,36 +83,45 @@ def get_lesson_status_map(user, module_id):
         Exception: Có thể phát sinh từ truy vấn database hoặc dữ liệu module
             không nhất quán.
     """
-    lessons = list(Lesson.objects.filter(module_id=module_id).order_by('order_index', 'created_at'))
-    if not lessons:
+    all_lessons = list(Lesson.objects.filter(module_id=module_id).order_by('order_index', 'created_at'))
+    if not all_lessons:
         return {}
 
-    module_state_map = get_module_state_map(user, lessons[0].module.course_id)
-    module_state = module_state_map.get(lessons[0].module_id, {})
+    active_lessons = [lesson for lesson in all_lessons if lesson.is_active]
+
+    module_state_map = get_module_state_map(user, all_lessons[0].module.course_id)
+    module_state = module_state_map.get(all_lessons[0].module_id, {})
     is_module_unlocked = module_state.get('is_unlocked', True)
 
     if not is_module_unlocked:
-        return {lesson.id: 'locked' for lesson in lessons}
+        return {lesson.id: 'locked' for lesson in all_lessons}
 
     progress_map = {
         progress.lesson_id: progress
-        for progress in LessonProgress.objects.filter(user=user, lesson_id__in=[lesson.id for lesson in lessons])
+        for progress in LessonProgress.objects.filter(
+            user=user,
+            lesson_id__in=[lesson.id for lesson in all_lessons],
+        )
     }
 
     teacher_has_full_unlock = (
         user.role == ROLE_TEACHER
-        and user_has_course_access(user, lessons[0].module.course_id)
+        and user_has_course_access(user, all_lessons[0].module.course_id)
     )
 
     if teacher_has_full_unlock:
-        return {
-            lesson.id: 'completed' if (progress_map.get(lesson.id) and progress_map[lesson.id].completed) else 'current'
-            for lesson in lessons
-        }
+        status_map = {}
+        for lesson in all_lessons:
+            if not lesson.is_active:
+                status_map[lesson.id] = 'locked'
+                continue
+            progress = progress_map.get(lesson.id)
+            status_map[lesson.id] = 'completed' if (progress and progress.completed) else 'current'
+        return status_map
 
     status_map = {}
     current_assigned = False
-    for lesson in lessons:
+    for lesson in active_lessons:
         progress = progress_map.get(lesson.id)
         if progress and progress.completed:
             status_map[lesson.id] = 'completed'

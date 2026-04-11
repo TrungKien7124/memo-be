@@ -36,8 +36,11 @@ def transcribe_lesson_video(*, video_path: str, language: str = 'en') -> str:
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=True) as temp_audio:
         _extract_audio_to_wav(video_path, temp_audio.name)
         stt_provider = get_stt_provider()
-        with open(temp_audio.name, 'rb') as audio_file:
-            transcript_text = stt_provider.transcribe(audio_file, language=language)
+        try:
+            with open(temp_audio.name, 'rb') as audio_file:
+                transcript_text = stt_provider.transcribe(audio_file, language=language)
+        except Exception as exc:
+            raise LessonVideoTranscriptionError('Lesson video transcription failed.') from exc
 
     normalized = (transcript_text or '').strip()
     if not normalized:

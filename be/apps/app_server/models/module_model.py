@@ -14,7 +14,7 @@ class Module(BaseModel):
 
     class Meta:
         db_table = 'modules'
-        ordering = ['order_index']
+        ordering = ['order_index', 'title', 'created_at']
 
     def __str__(self):
         return f'{self.course.title} - {self.title}'

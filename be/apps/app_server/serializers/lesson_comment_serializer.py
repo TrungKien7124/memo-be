@@ -49,6 +49,10 @@ class LessonCommentSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         payload = super().to_representation(instance)
         payload['is_deleted'] = bool(instance.is_deleted)
+        # Normalize parent to string UUID for API clients and tests.
+        parent_id = payload.get('parent')
+        if parent_id is not None:
+            payload['parent'] = str(parent_id)
         if instance.is_deleted:
             payload['content'] = '[deleted]'
         return payload

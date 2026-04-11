@@ -1,5 +1,26 @@
 from rest_framework import serializers
 
+from apps.les.services.lesson_ingestion_status_service import LESSON_PIPELINE_STATUS_BATCH_MAX_IDS
+
+
+class LessonIngestionLessonStatusBatchRequestSerializer(serializers.Serializer):
+    lesson_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False,
+        min_length=1,
+        max_length=LESSON_PIPELINE_STATUS_BATCH_MAX_IDS,
+    )
+
+    def validate_lesson_ids(self, value):
+        seen = set()
+        ordered_unique = []
+        for lesson_id in value:
+            if lesson_id in seen:
+                continue
+            seen.add(lesson_id)
+            ordered_unique.append(lesson_id)
+        return ordered_unique
+
 
 class LessonIngestionJobLatestSerializer(serializers.Serializer):
     id = serializers.UUIDField()
@@ -21,6 +42,12 @@ class LessonIngestionLessonStatusSerializer(serializers.Serializer):
     lesson_id = serializers.UUIDField()
     supported_for_ingestion = serializers.BooleanField()
     lesson_type = serializers.CharField()
+
+    publication_status = serializers.CharField()
+    is_active = serializers.BooleanField()
+    publication_error = serializers.CharField(allow_blank=True)
+    transcript_status = serializers.CharField()
+    transcript_error = serializers.CharField(allow_blank=True)
 
     latest_job = LessonIngestionJobLatestSerializer(allow_null=True)
     latest_completed_job_id = serializers.UUIDField(allow_null=True)

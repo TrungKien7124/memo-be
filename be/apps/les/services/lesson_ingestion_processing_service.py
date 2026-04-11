@@ -7,7 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.ai.services.rag.retriever import delete_documents, index_documents
-from apps.app_server.models.lesson_model import LESSON_TYPE_LESSON
+from apps.app_server.models.lesson_model import LESSON_TYPE_LESSON, TRANSCRIPT_STATUS_READY
 from apps.les.models import (
     LessonContentChunk,
     LessonIngestionJob,
@@ -72,7 +72,21 @@ def extract_source_document_for_lesson(lesson, job: LessonIngestionJob) -> Lesso
     lesson_id = getattr(lesson, 'id', None)
 
     if lesson_type == LESSON_TYPE_LESSON:
-        raw_text = getattr(lesson, 'content_markdown', '') or ''
+        summary_text = getattr(lesson, 'content_markdown', '') or ''
+        has_video_file = bool((getattr(getattr(lesson, 'video_file', None), 'name', None) or '').strip())
+        transcript_text = getattr(lesson, 'transcript_text', '') or ''
+        if has_video_file and getattr(lesson, 'transcript_status', None) != TRANSCRIPT_STATUS_READY:
+            raise LessonIngestionProcessingError(
+                'Uploaded video transcript is not ready for ingestion.',
+                error_payload={
+                    'lesson_id': str(lesson_id),
+                    'transcript_status': getattr(lesson, 'transcript_status', None),
+                },
+            )
+        raw_text_parts = [summary_text]
+        if has_video_file:
+            raw_text_parts.append(transcript_text)
+        raw_text = '\n\n'.join(part.strip() for part in raw_text_parts if part and part.strip())
         normalized_text = normalize_lesson_text(raw_text)
         if normalized_text:
             checksum = hashlib.sha256(normalized_text.encode('utf-8')).hexdigest()
@@ -389,4 +403,3 @@ def mark_job_failed(job: LessonIngestionJob, error_message: str, error_payload=N
     job.error_message = error_message[:2000]
     job.error_payload = error_payload or {}
     job.save(update_fields=['status', 'finished_at', 'error_message', 'error_payload', 'updated_at'])
-

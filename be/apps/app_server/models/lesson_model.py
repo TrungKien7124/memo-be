@@ -24,6 +24,17 @@ TRANSCRIPT_STATUS_CHOICES = [
     (TRANSCRIPT_STATUS_FAILED, 'Failed'),
 ]
 
+PUBLICATION_STATUS_DRAFT = 'draft'
+PUBLICATION_STATUS_PROCESSING = 'processing'
+PUBLICATION_STATUS_READY = 'ready'
+PUBLICATION_STATUS_FAILED = 'failed'
+PUBLICATION_STATUS_CHOICES = [
+    (PUBLICATION_STATUS_DRAFT, 'Draft'),
+    (PUBLICATION_STATUS_PROCESSING, 'Processing'),
+    (PUBLICATION_STATUS_READY, 'Ready'),
+    (PUBLICATION_STATUS_FAILED, 'Failed'),
+]
+
 
 class Lesson(BaseModel):
     module = models.ForeignKey(
@@ -48,10 +59,20 @@ class Lesson(BaseModel):
     is_final = models.BooleanField(default=False)
     min_watch_time = models.PositiveIntegerField(default=120, help_text='Minimum seconds to mark complete')
     order_index = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(
+        default=True,
+        help_text='When false, learners do not see this lesson until publication pipeline completes.',
+    )
+    publication_status = models.CharField(
+        max_length=20,
+        choices=PUBLICATION_STATUS_CHOICES,
+        default=PUBLICATION_STATUS_READY,
+    )
+    publication_error = models.TextField(blank=True, default='')
 
     class Meta:
         db_table = 'lessons'
-        ordering = ['order_index']
+        ordering = ['order_index', 'title', 'created_at']
         constraints = [
             models.UniqueConstraint(
                 fields=['module'],

@@ -2,7 +2,9 @@ import json
 import mimetypes
 import os
 
+from django.conf import settings
 from django.core import signing
+from django.db import models
 from django.core.signing import BadSignature, SignatureExpired
 from django.http import FileResponse, HttpResponse
 from rest_framework.decorators import action
@@ -13,12 +15,14 @@ from apps.app_server.controllers.base_controller import CoreModelViewSet
 from apps.app_server.responses.api_responses import error_envelope_response, success_response
 from apps.app_server.models.lesson_model import Lesson
 from apps.app_server.models.module_model import Module
+from apps.app_server.models.user_model import ROLE_STUDENT
 from apps.app_server.serializers.lesson_serializer import LessonSerializer
 from apps.app_server.permissions.role_permission import IsTeacherOrAdmin
 from apps.app_server.services.course_access_service import (
     is_admin_user,
     user_has_course_access,
 )
+from apps.app_server.services.lesson_publication_service import reconcile_lesson_publication
 from apps.app_server.services.lesson_unlock_service import get_lesson_status_map
 from apps.les.models import LessonIngestionTriggerSource
 from apps.les.services.lesson_ingestion_scheduling_service import (
@@ -40,7 +44,13 @@ class LessonViewSet(CoreModelViewSet):
     PLAYBACK_COOKIE_NAME = 'lesson_playback_session'
 
     def get_normalized_data(self):
-        data = super().get_normalized_data().copy()
+        raw_data = super().get_normalized_data()
+        if hasattr(raw_data, 'lists'):
+            data = raw_data.__class__('', mutable=True)
+            for key, values in raw_data.lists():
+                data.setlist(key, list(values))
+        else:
+            data = raw_data.copy()
         quiz_questions_value = data.get('quiz_questions')
         if isinstance(quiz_questions_value, str):
             try:
@@ -57,12 +67,27 @@ class LessonViewSet(CoreModelViewSet):
         return [IsAuthenticated()]
 
     def get_queryset(self):
-        queryset = Lesson.objects.select_related('module').all().order_by('order_index', 'created_at')
-        if self.action == 'list' and not is_admin_user(self.request.user):
+        queryset = Lesson.objects.select_related('module').all().order_by('order_index', 'title', 'created_at')
+        user = self.request.user
+        if not user.is_authenticated:
+            return queryset
+        if is_admin_user(user):
+            return queryset
+        if self.action == 'list':
             queryset = queryset.filter(
-                module__course__enrollments__user=self.request.user,
+                module__course__enrollments__user=user,
                 module__course__enrollments__is_deleted=False,
             )
+            if getattr(user, 'role', None) == ROLE_STUDENT:
+                queryset = queryset.filter(is_active=True)
+            return queryset
+        if self.action == 'retrieve' and getattr(user, 'role', None) == ROLE_STUDENT:
+            return queryset.filter(is_active=True)
+        # Playback metadata: enrolled students only see active lessons.
+        # Stream uses signed URL + cookie; the client may be anonymous while the token
+        # carries the learner identity, so do not tie stream get_queryset to session role.
+        if self.action == 'video_playback' and getattr(user, 'role', None) == ROLE_STUDENT:
+            return queryset.filter(is_active=True)
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -102,23 +127,71 @@ class LessonViewSet(CoreModelViewSet):
         return context
 
     def perform_create(self, serializer):
+        """
+        When order_index is missing or 0, append the lesson to the end
+        of its module sequence.
+        """
+        module = serializer.validated_data.get('module')
+        order_index = serializer.validated_data.get('order_index') or 0
+        if module is not None and order_index == 0:
+            max_order = (
+                Lesson.objects.filter(module=module).aggregate(models.Max('order_index'))['order_index__max'] or 0
+            )
+            serializer.validated_data['order_index'] = max_order + 1
         super().perform_create(serializer)
-        if serializer.instance.video_file:
-            schedule_lesson_video_transcription(serializer.instance)
+        lesson = serializer.instance
+        manual_transcript_provided = bool(serializer.validated_data.get('_manual_transcript_provided'))
+        manual_transcript_value = str(serializer.validated_data.get('_manual_transcript_value', '') or '').strip()
+        auto_transcribe_enabled = getattr(settings, 'LESSON_AUTO_TRANSCRIBE_ENABLED', False)
+        has_video_file = bool(getattr(lesson, 'video_file', None))
+
+        if has_video_file and manual_transcript_provided:
+            lesson.transcript_text = manual_transcript_value
+            lesson.transcript_status = 'ready'
+            lesson.transcript_error = ''
+            lesson.save(update_fields=['transcript_text', 'transcript_status', 'transcript_error', 'updated_at'])
+        elif has_video_file and auto_transcribe_enabled:
+            schedule_lesson_video_transcription(lesson)
+        elif has_video_file and not auto_transcribe_enabled:
+            # Serializer validation should prevent this branch in manual-only mode.
+            lesson.transcript_status = 'not_started'
+            lesson.transcript_error = ''
+            lesson.save(update_fields=['transcript_status', 'transcript_error', 'updated_at'])
+
         schedule_lesson_ingestion(
-            serializer.instance,
+            lesson,
             trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
             job_type=None,
         )
+        reconcile_lesson_publication(serializer.instance)
 
     def perform_update(self, serializer):
         previous_snapshot = extract_ingestion_relevant_fields(serializer.instance)
         previous_video_file_name = serializer.instance.video_file.name if serializer.instance.video_file else ''
         super().perform_update(serializer)
-        current_video_file_name = serializer.instance.video_file.name if serializer.instance.video_file else ''
-        if current_video_file_name and current_video_file_name != previous_video_file_name:
-            schedule_lesson_video_transcription(serializer.instance)
+        lesson = serializer.instance
+        current_video_file_name = lesson.video_file.name if lesson.video_file else ''
+        manual_transcript_provided = bool(serializer.validated_data.get('_manual_transcript_provided'))
+        manual_transcript_value = str(serializer.validated_data.get('_manual_transcript_value', '') or '').strip()
+        auto_transcribe_enabled = getattr(settings, 'LESSON_AUTO_TRANSCRIBE_ENABLED', False)
+        video_file_changed = bool(current_video_file_name and current_video_file_name != previous_video_file_name)
+
+        if manual_transcript_provided:
+            lesson.transcript_text = manual_transcript_value
+            lesson.transcript_status = 'ready'
+            lesson.transcript_error = ''
+            lesson.save(update_fields=['transcript_text', 'transcript_status', 'transcript_error', 'updated_at'])
+        elif video_file_changed and auto_transcribe_enabled:
+            schedule_lesson_video_transcription(lesson)
+        elif video_file_changed and not auto_transcribe_enabled:
+            has_existing_transcript = bool(str(lesson.transcript_text or '').strip())
+            if has_existing_transcript:
+                lesson.transcript_status = 'ready'
+                lesson.transcript_error = ''
+                lesson.save(update_fields=['transcript_status', 'transcript_error', 'updated_at'])
+
         schedule_lesson_reingestion_if_needed(previous_snapshot, serializer.instance)
+        reconcile_lesson_publication(serializer.instance)
 
     @action(detail=True, methods=['get'], url_path='video/playback')
     def video_playback(self, request, pk=None):
@@ -200,6 +273,13 @@ class LessonViewSet(CoreModelViewSet):
             return error_envelope_response(
                 code=602,
                 message='Playback session không hợp lệ cho người dùng này.',
+                data=None,
+                http_status=403,
+            )
+        if not lesson.is_active:
+            return error_envelope_response(
+                code=602,
+                message='Bài học chưa sẵn sàng phát cho người học.',
                 data=None,
                 http_status=403,
             )

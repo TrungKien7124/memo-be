@@ -1,7 +1,8 @@
+from django.db import transaction
 from django.db.models import BooleanField, Count, DateTimeField, Exists, OuterRef, Q, Subquery, Value
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework import status
 
 from apps.app_server.controllers.base_controller import CoreModelViewSet
 from apps.app_server.models.course_enrollment_model import CourseEnrollment
@@ -10,7 +11,9 @@ from apps.app_server.models.user_model import ROLE_TEACHER, User
 from apps.app_server.permissions.role_permission import IsAdmin, IsTeacherOrAdmin
 from apps.app_server.responses.api_responses import success_response, warning_envelope_response
 from apps.app_server.serializers.course_enrollment_serializer import CourseEnrollmentSerializer
+from apps.app_server.serializers.module_serializer import ModuleSerializer
 from apps.app_server.serializers.course_serializer import CourseSerializer
+from apps.app_server.serializers.course_extend_store_serializer import CourseExtendStoreSerializer
 from apps.app_server.services.course_access_service import is_admin_user
 
 
@@ -24,7 +27,7 @@ class CourseViewSet(CoreModelViewSet):
             'bulk_grant_teachers',
         ):
             return [IsAuthenticated(), IsAdmin()]
-        if self.action in ('create', 'update', 'partial_update', 'destroy'):
+        if self.action in ('create', 'update', 'partial_update', 'destroy', 'extend_store'):
             return [IsAuthenticated(), IsTeacherOrAdmin()]
         return [IsAuthenticated()]
 
@@ -191,3 +194,52 @@ class CourseViewSet(CoreModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['patch'], url_path='extend-store')
+    def extend_store(self, request, pk=None):
+        """
+        Atomic update for course fields + module ordering.
+
+        Partial reorder is supported: modules omitted from the payload keep
+        their current order_index.
+        """
+        course = self.get_object()
+        serializer = CourseExtendStoreSerializer(
+            data=request.data,
+            context={'course': course},
+        )
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        with transaction.atomic():
+            update_fields = []
+            for field in ('title', 'description', 'thumbnail_url', 'status'):
+                if field in validated:
+                    setattr(course, field, validated[field])
+                    update_fields.append(field)
+            if update_fields:
+                course.save(update_fields=update_fields + ['updated_at'])
+
+            modules_payload = validated.get('modules') or []
+            if modules_payload:
+                modules_by_id = {
+                    module.id: module
+                    for module in course.modules.all()
+                }
+                for item in modules_payload:
+                    module = modules_by_id.get(item['id'])
+                    if module is None:
+                        continue
+                    module.order_index = item.get('order_index') or 0
+                    module.save(update_fields=['order_index', 'updated_at'])
+
+        course_data = CourseSerializer(course, context=self.get_serializer_context()).data
+        modules_data = ModuleSerializer(
+            course.modules.all().order_by('order_index', 'title', 'created_at'),
+            many=True,
+            context=self.get_serializer_context(),
+        ).data
+        return success_response(
+            data={'course': course_data, 'modules': modules_data},
+            message='Lưu thứ tự khóa học và modules thành công.',
+        )

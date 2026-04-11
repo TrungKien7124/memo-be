@@ -1,5 +1,7 @@
 from unittest.mock import patch
+from uuid import uuid4
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
 from rest_framework import status
@@ -8,10 +10,19 @@ from rest_framework.test import APITestCase
 from apps.ai.services.rag import retriever
 from apps.app_server.models.course_model import Course, COURSE_STATUS_PUBLISHED
 from apps.app_server.models.lesson_model import (
+    LESSON_TYPE_LESSON,
     LESSON_TYPE_QUIZ,
     LESSON_TYPE_TEXT,
     LESSON_TYPE_VIDEO,
     Lesson,
+    PUBLICATION_STATUS_DRAFT,
+    PUBLICATION_STATUS_FAILED,
+    PUBLICATION_STATUS_PROCESSING,
+    PUBLICATION_STATUS_READY,
+    TRANSCRIPT_STATUS_FAILED,
+    TRANSCRIPT_STATUS_NOT_STARTED,
+    TRANSCRIPT_STATUS_PROCESSING,
+    TRANSCRIPT_STATUS_READY,
 )
 from apps.app_server.models.module_model import Module
 from apps.app_server.models.user_model import ROLE_STUDENT, ROLE_TEACHER, User
@@ -24,7 +35,7 @@ from apps.les.models import (
     LessonSourceDocument,
 )
 from apps.les.services.lesson_ingestion_processing_service import LessonIngestionProcessingError
-from apps.les.tasks import process_lesson_ingestion_job
+from apps.les.tasks import process_lesson_ingestion_job, process_lesson_video_transcription
 
 
 class LessonIngestionProcessingAPITestCase(TestCase):
@@ -155,6 +166,49 @@ class LessonIngestionProcessingAPITestCase(TestCase):
 
         for chunk in chunks:
             self.assertTrue(chunk.vector_document_id)
+
+    @patch('apps.les.services.lesson_ingestion_processing_service.index_documents')
+    def test_uploaded_video_ingestion_uses_ready_transcript_text(self, mock_index_documents):
+        mock_index_documents.side_effect = lambda documents, metadatas=None: [
+            f'vec-{index}' for index in range(len(documents))
+        ]
+        lesson = self._create_text_lesson(content_markdown='Lesson summary')
+        lesson.video_file = SimpleUploadedFile('ready.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.transcript_status = TRANSCRIPT_STATUS_READY
+        lesson.transcript_text = 'Transcript from uploaded video'
+        lesson.save(update_fields=['video_file', 'transcript_status', 'transcript_text', 'updated_at'])
+        job = self._build_ingestion_job(
+            lesson,
+            job_type=LessonIngestionJobType.INGEST,
+            trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
+        )
+
+        process_lesson_ingestion_job.run(str(job.id))
+        job.refresh_from_db()
+
+        self.assertEqual(job.status, LessonIngestionJobStatus.COMPLETED)
+        source_document = LessonSourceDocument.objects.get(lesson=lesson, ingestion_job=job)
+        self.assertIn('Lesson summary', source_document.raw_text)
+        self.assertIn('Transcript from uploaded video', source_document.raw_text)
+
+    def test_uploaded_video_ingestion_fails_when_transcript_is_not_ready(self):
+        lesson = self._create_text_lesson(content_markdown='Lesson summary')
+        lesson.video_file = SimpleUploadedFile('not-ready.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.transcript_status = TRANSCRIPT_STATUS_NOT_STARTED
+        lesson.transcript_text = ''
+        lesson.save(update_fields=['video_file', 'transcript_status', 'transcript_text', 'updated_at'])
+        job = self._build_ingestion_job(
+            lesson,
+            job_type=LessonIngestionJobType.INGEST,
+            trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
+        )
+
+        process_lesson_ingestion_job.run(str(job.id))
+        job.refresh_from_db()
+
+        self.assertEqual(job.status, LessonIngestionJobStatus.FAILED)
+        self.assertIn('Uploaded video transcript is not ready', job.error_message)
+        self.assertEqual(job.error_payload['transcript_status'], TRANSCRIPT_STATUS_NOT_STARTED)
 
     @patch('apps.les.services.lesson_ingestion_processing_service.get_video_transcript_from_url')
     def test_video_transcript_failure_marks_job_failed_and_keeps_previous_active_set(self, mock_transcript):
@@ -495,8 +549,6 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
     def test_job_detail_unknown_job_returns_not_found(self):
         self.client.force_authenticate(user=self.teacher)
 
-        from uuid import uuid4
-
         response = self.client.get(f'/api/lesson-ingestion/jobs/{uuid4()}/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(response.data['status'], 'warning')
@@ -519,6 +571,9 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         self.assertTrue(payload['has_active_chunk_set'])
         self.assertEqual(payload['latest_completed_job_id'], str(completed_job.id))
         self.assertIsNone(payload['latest_failed_job'])
+        self.assertEqual(payload['publication_status'], PUBLICATION_STATUS_READY)
+        self.assertTrue(payload['is_active'])
+        self.assertIn('transcript_status', payload)
 
     def test_lesson_status_supported_failed_latest_keeps_previous_active(self):
         self.client.force_authenticate(user=self.teacher)
@@ -548,6 +603,8 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         self.assertEqual(payload['latest_completed_job_id'], str(completed_job.id))
         self.assertIsNotNone(payload['latest_failed_job'])
         self.assertEqual(payload['latest_failed_job']['id'], str(failed_job.id))
+        self.assertEqual(payload['publication_status'], PUBLICATION_STATUS_READY)
+        self.assertTrue(payload['is_active'])
 
     def test_lesson_status_unsupported_quiz(self):
         self.client.force_authenticate(user=self.teacher)
@@ -561,6 +618,63 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         self.assertEqual(payload['lesson_type'], LESSON_TYPE_QUIZ)
         self.assertEqual(payload['active_chunk_count'], 0)
         self.assertFalse(payload['has_active_chunk_set'])
+        self.assertEqual(payload['publication_status'], PUBLICATION_STATUS_READY)
+        self.assertTrue(payload['is_active'])
+
+    def test_lesson_status_endpoint_is_read_only_for_publication_fields(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='Legacy Lesson')
+        lesson.publication_status = PUBLICATION_STATUS_READY
+        lesson.is_active = True
+        lesson.publication_error = ''
+        lesson.save(update_fields=['publication_status', 'is_active', 'publication_error', 'updated_at'])
+
+        response = self.client.get(f'/api/lesson-ingestion/lessons/{lesson.id}/status/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['publication_status'], PUBLICATION_STATUS_READY)
+        self.assertTrue(response.data['data']['is_active'])
+
+        lesson.refresh_from_db()
+        self.assertEqual(lesson.publication_status, PUBLICATION_STATUS_READY)
+        self.assertTrue(lesson.is_active)
+
+        lesson.publication_status = PUBLICATION_STATUS_DRAFT
+        lesson.is_active = False
+        lesson.save(update_fields=['publication_status', 'is_active', 'updated_at'])
+        response = self.client.get(f'/api/lesson-ingestion/lessons/{lesson.id}/status/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['publication_status'], PUBLICATION_STATUS_DRAFT)
+        self.assertFalse(response.data['data']['is_active'])
+
+    def test_lesson_status_reports_effective_failed_without_mutating_publication_fields(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='Stale Processing Lesson')
+        lesson.publication_status = PUBLICATION_STATUS_PROCESSING
+        lesson.is_active = False
+        lesson.publication_error = ''
+        lesson.save(update_fields=['publication_status', 'is_active', 'publication_error', 'updated_at'])
+        LessonIngestionJob.objects.create(
+            lesson=lesson,
+            job_type=LessonIngestionJobType.INGEST,
+            trigger_source=LessonIngestionTriggerSource.LESSON_CREATED,
+            status=LessonIngestionJobStatus.FAILED,
+            source_version='v1',
+            error_message='Unsupported lesson type for ingestion processing.',
+        )
+
+        response = self.client.get(f'/api/lesson-ingestion/lessons/{lesson.id}/status/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['publication_status'], PUBLICATION_STATUS_FAILED)
+        self.assertFalse(response.data['data']['is_active'])
+        self.assertEqual(
+            response.data['data']['publication_error'],
+            'Unsupported lesson type for ingestion processing.',
+        )
+
+        lesson.refresh_from_db()
+        self.assertEqual(lesson.publication_status, PUBLICATION_STATUS_PROCESSING)
+        self.assertFalse(lesson.is_active)
+        self.assertEqual(lesson.publication_error, '')
 
     @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
     def test_manual_reindex_text_creates_reingest_pending_job(self, mock_delay):
@@ -616,3 +730,252 @@ class LessonIngestionStatusEndpointsAPITestCase(APITestCase):
         response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/reindex/')
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_batch_lesson_status_success_preserves_order(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson_a = self._create_text_lesson(title='Batch A')
+        lesson_b = self._create_text_lesson(title='Batch B')
+        self._seed_active_chunk_set(lesson_a)
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': [str(lesson_b.id), str(lesson_a.id)]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payload = response.data['data']
+        self.assertEqual(len(payload['records']), 2)
+        self.assertEqual(payload['records'][0]['lesson_id'], str(lesson_b.id))
+        self.assertEqual(payload['records'][1]['lesson_id'], str(lesson_a.id))
+        self.assertEqual(payload['missing_lesson_ids'], [])
+
+    def test_batch_lesson_status_deduplicates_preserving_first_occurrence_order(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson_a = self._create_text_lesson(title='Dedupe A')
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': [str(lesson_a.id), str(lesson_a.id)]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['data']['records']), 1)
+
+    def test_batch_lesson_status_partial_missing_ids(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson_a = self._create_text_lesson(title='Present')
+        ghost_id = uuid4()
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': [str(lesson_a.id), str(ghost_id)]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        body = response.data['data']
+        self.assertEqual(len(body['records']), 1)
+        self.assertEqual(body['records'][0]['lesson_id'], str(lesson_a.id))
+        self.assertEqual(body['missing_lesson_ids'], [str(ghost_id)])
+
+    def test_batch_lesson_status_empty_list_rejected(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': []},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_batch_lesson_status_invalid_lesson_ids_type(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': 'not-a-list'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_batch_lesson_status_invalid_uuid_rejected(self):
+        self.client.force_authenticate(user=self.teacher)
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': ['not-a-uuid']},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_batch_lesson_status_limit_exceeded(self):
+        self.client.force_authenticate(user=self.teacher)
+        from apps.les.services.lesson_ingestion_status_service import LESSON_PIPELINE_STATUS_BATCH_MAX_IDS
+
+        identifiers = [str(uuid4()) for _ in range(LESSON_PIPELINE_STATUS_BATCH_MAX_IDS + 1)]
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': identifiers},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_batch_lesson_status_requires_teacher_or_admin(self):
+        lesson = self._create_text_lesson(title='Perm batch')
+        payload = {'lesson_ids': [str(lesson.id)]}
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.client.force_authenticate(user=self.learner)
+        response = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            payload,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch('apps.les.services.lesson_video_transcription_scheduling_service.process_lesson_video_transcription.delay')
+    def test_transcript_retry_from_failed_enqueues_task_and_sets_processing(self, mock_delay):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='Retry Failed')
+        lesson.video_file = SimpleUploadedFile('retry.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.transcript_status = TRANSCRIPT_STATUS_FAILED
+        lesson.transcript_error = 'old transcript failure'
+        lesson.transcript_text = 'stale transcript'
+        lesson.publication_status = PUBLICATION_STATUS_FAILED
+        lesson.is_active = False
+        lesson.publication_error = 'old transcript failure'
+        lesson.save(update_fields=[
+            'video_file',
+            'transcript_status',
+            'transcript_error',
+            'transcript_text',
+            'publication_status',
+            'publication_error',
+            'is_active',
+            'updated_at',
+        ])
+
+        response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        lesson.refresh_from_db()
+
+        self.assertEqual(lesson.transcript_status, TRANSCRIPT_STATUS_NOT_STARTED)
+        self.assertEqual(lesson.transcript_error, '')
+        self.assertEqual(lesson.transcript_text, '')
+        self.assertEqual(lesson.publication_status, PUBLICATION_STATUS_PROCESSING)
+        self.assertFalse(lesson.is_active)
+        mock_delay.assert_called_once_with(str(lesson.id))
+
+    def test_transcript_retry_rejects_lesson_without_video_file(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='No Video')
+        lesson.video_file = None
+        lesson.save(update_fields=['video_file', 'updated_at'])
+
+        response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_transcript_retry_rejects_quiz_lesson(self):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_quiz_lesson(title='Quiz Retry')
+        response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 603)
+
+    def test_transcript_retry_endpoint_forbidden_for_student(self):
+        lesson = self._create_text_lesson(title='Retry Permission')
+        lesson.video_file = SimpleUploadedFile('retry-perm.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.save(update_fields=['video_file', 'updated_at'])
+
+        response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        self.client.force_authenticate(user=self.learner)
+        response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    @patch('apps.les.tasks.process_lesson_ingestion_job.delay')
+    @patch('apps.les.tasks.transcribe_lesson_video', return_value='retry transcript ready')
+    def test_transcript_retry_success_enqueues_ingestion_after_ready(
+        self,
+        _mock_transcribe,
+        mock_ingestion_delay,
+    ):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='Retry Success')
+        lesson.video_file = SimpleUploadedFile('retry-success.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.transcript_status = TRANSCRIPT_STATUS_FAILED
+        lesson.transcript_error = 'boom'
+        lesson.publication_status = PUBLICATION_STATUS_FAILED
+        lesson.is_active = False
+        lesson.save(update_fields=[
+            'video_file',
+            'transcript_status',
+            'transcript_error',
+            'publication_status',
+            'is_active',
+            'updated_at',
+        ])
+
+        retry_response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(retry_response.status_code, status.HTTP_200_OK)
+        process_lesson_video_transcription.run(str(lesson.id))
+        lesson.refresh_from_db()
+
+        self.assertEqual(lesson.transcript_status, TRANSCRIPT_STATUS_READY)
+        self.assertEqual(lesson.transcript_text, 'retry transcript ready')
+        self.assertEqual(LessonIngestionJob.objects.filter(lesson=lesson).count(), 1)
+        mock_ingestion_delay.assert_called_once()
+
+    @patch('apps.les.tasks.transcribe_lesson_video', side_effect=RuntimeError('stt down'))
+    def test_status_endpoints_reflect_retry_processing_and_failed(self, _mock_transcribe):
+        self.client.force_authenticate(user=self.teacher)
+        lesson = self._create_text_lesson(title='Retry Status')
+        lesson.video_file = SimpleUploadedFile('retry-status.mp4', b'\x00' * 64, content_type='video/mp4')
+        lesson.transcript_status = TRANSCRIPT_STATUS_FAILED
+        lesson.publication_status = PUBLICATION_STATUS_FAILED
+        lesson.is_active = False
+        lesson.save(update_fields=['video_file', 'transcript_status', 'publication_status', 'is_active', 'updated_at'])
+
+        retry_response = self.client.post(f'/api/lesson-ingestion/lessons/{lesson.id}/transcript/retry/')
+        self.assertEqual(retry_response.status_code, status.HTTP_200_OK)
+
+        single_processing = self.client.get(f'/api/lesson-ingestion/lessons/{lesson.id}/status/')
+        batch_processing = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': [str(lesson.id)]},
+            format='json',
+        )
+        self.assertEqual(single_processing.status_code, status.HTTP_200_OK)
+        self.assertEqual(batch_processing.status_code, status.HTTP_200_OK)
+        self.assertEqual(single_processing.data['data']['publication_status'], PUBLICATION_STATUS_PROCESSING)
+        self.assertEqual(single_processing.data['data']['transcript_status'], TRANSCRIPT_STATUS_NOT_STARTED)
+        self.assertEqual(
+            batch_processing.data['data']['records'][0]['publication_status'],
+            PUBLICATION_STATUS_PROCESSING,
+        )
+
+        process_lesson_video_transcription.run(str(lesson.id))
+        lesson.refresh_from_db()
+        self.assertEqual(lesson.transcript_status, TRANSCRIPT_STATUS_FAILED)
+        self.assertEqual(lesson.publication_status, PUBLICATION_STATUS_FAILED)
+
+        single_failed = self.client.get(f'/api/lesson-ingestion/lessons/{lesson.id}/status/')
+        batch_failed = self.client.post(
+            '/api/lesson-ingestion/lessons/status/batch/',
+            {'lesson_ids': [str(lesson.id)]},
+            format='json',
+        )
+        self.assertEqual(single_failed.status_code, status.HTTP_200_OK)
+        self.assertEqual(batch_failed.status_code, status.HTTP_200_OK)
+        self.assertEqual(single_failed.data['data']['publication_status'], PUBLICATION_STATUS_FAILED)
+        self.assertEqual(single_failed.data['data']['transcript_status'], TRANSCRIPT_STATUS_FAILED)
+        self.assertEqual(
+            batch_failed.data['data']['records'][0]['publication_status'],
+            PUBLICATION_STATUS_FAILED,
+        )
+        self.assertEqual(
+            batch_failed.data['data']['records'][0]['transcript_status'],
+            TRANSCRIPT_STATUS_FAILED,
+        )
